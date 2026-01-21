@@ -1,0 +1,21 @@
+[package]
+name = "mnmx-engine"
+version = "0.1.0"
+edition = "2021"
+description = "MNMX cross-chain routing engine using minimax search"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+log = "0.4"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "routing_bench"
+harness = false
