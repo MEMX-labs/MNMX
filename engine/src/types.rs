@@ -155,3 +155,48 @@ impl Route {
             estimated_time: 0,
             minimax_score: 0.0,
         }
+    }
+
+    pub fn hop_count(&self) -> usize {
+        self.hops.len()
+    }
+
+    pub fn total_fee_percentage(&self, input_amount: f64) -> f64 {
+        if input_amount <= 0.0 {
+            return 0.0;
+        }
+        (self.total_fees / input_amount) * 100.0
+    }
+
+    pub fn value_retention(&self, input_amount: f64) -> f64 {
+        if input_amount <= 0.0 {
+            return 0.0;
+        }
+        self.expected_output / input_amount
+    }
+
+    pub fn bridges_used(&self) -> Vec<String> {
+        self.hops.iter().map(|h| h.bridge.clone()).collect()
+    }
+
+    pub fn chains_traversed(&self) -> Vec<Chain> {
+        let mut chains = Vec::new();
+        for hop in &self.hops {
+            if chains.last() != Some(&hop.from_chain) {
+                chains.push(hop.from_chain);
+            }
+            chains.push(hop.to_chain);
+        }
+        chains
+    }
+}
+
+impl Default for Route {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A single hop in a route.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteHop {
