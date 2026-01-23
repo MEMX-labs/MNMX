@@ -268,3 +268,93 @@ impl BridgeHealth {
         }
         let congestion_factor = match self.congestion {
             CongestionLevel::Low => 1.0,
+            CongestionLevel::Medium => 0.8,
+            CongestionLevel::High => 0.5,
+        };
+        self.success_rate * congestion_factor
+    }
+}
+
+/// Network congestion level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CongestionLevel {
+    Low,
+    Medium,
+    High,
+}
+
+/// Risk classification for a route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl fmt::Display for RiskLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RiskLevel::Low => write!(f, "Low"),
+            RiskLevel::Medium => write!(f, "Medium"),
+            RiskLevel::High => write!(f, "High"),
+            RiskLevel::Critical => write!(f, "Critical"),
+        }
+    }
+}
+
+/// A request for route finding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteRequest {
+    pub from_chain: Chain,
+    pub from_token: Token,
+    pub to_chain: Chain,
+    pub to_token: Token,
+    pub amount: f64,
+    pub strategy: Strategy,
+    pub max_hops: usize,
+}
+
+/// Routing strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Strategy {
+    Minimax,
+    Cheapest,
+    Fastest,
+    Safest,
+}
+
+impl fmt::Display for Strategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Strategy::Minimax => write!(f, "Minimax"),
+            Strategy::Cheapest => write!(f, "Cheapest"),
+            Strategy::Fastest => write!(f, "Fastest"),
+            Strategy::Safest => write!(f, "Safest"),
+        }
+    }
+}
+
+/// Weights for multi-objective scoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoringWeights {
+    pub fees: f64,
+    pub slippage: f64,
+    pub speed: f64,
+    pub reliability: f64,
+    pub mev_exposure: f64,
+}
+
+impl ScoringWeights {
+    pub fn sum(&self) -> f64 {
+        self.fees + self.slippage + self.speed + self.reliability + self.mev_exposure
+    }
+
+    pub fn is_valid(&self) -> bool {
+        let sum = self.sum();
+        (sum - 1.0).abs() < 1e-6
+            && self.fees >= 0.0
+            && self.slippage >= 0.0
+            && self.speed >= 0.0
+            && self.reliability >= 0.0
+            && self.mev_exposure >= 0.0
