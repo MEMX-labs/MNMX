@@ -200,3 +200,71 @@ impl Default for Route {
 /// A single hop in a route.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteHop {
+    pub from_chain: Chain,
+    pub to_chain: Chain,
+    pub from_token: Token,
+    pub to_token: Token,
+    pub bridge: String,
+    pub input_amount: f64,
+    pub output_amount: f64,
+    pub fee: f64,
+    pub estimated_time: u64,
+}
+
+impl RouteHop {
+    pub fn fee_percentage(&self) -> f64 {
+        if self.input_amount <= 0.0 {
+            return 0.0;
+        }
+        (self.fee / self.input_amount) * 100.0
+    }
+
+    pub fn slippage(&self) -> f64 {
+        if self.input_amount <= 0.0 {
+            return 0.0;
+        }
+        1.0 - (self.output_amount + self.fee) / self.input_amount
+    }
+}
+
+/// A quote from a bridge for a specific transfer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeQuote {
+    pub bridge_name: String,
+    pub input_amount: f64,
+    pub output_amount: f64,
+    pub fee: f64,
+    pub estimated_time: u64,
+    pub liquidity_depth: f64,
+    pub expires_at: u64,
+}
+
+impl BridgeQuote {
+    pub fn effective_rate(&self) -> f64 {
+        if self.input_amount <= 0.0 {
+            return 0.0;
+        }
+        self.output_amount / self.input_amount
+    }
+
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time >= self.expires_at
+    }
+}
+
+/// Health status of a bridge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeHealth {
+    pub online: bool,
+    pub congestion: CongestionLevel,
+    pub success_rate: f64,
+    pub median_confirm_time: u64,
+}
+
+impl BridgeHealth {
+    pub fn reliability_score(&self) -> f64 {
+        if !self.online {
+            return 0.0;
+        }
+        let congestion_factor = match self.congestion {
+            CongestionLevel::Low => 1.0,
