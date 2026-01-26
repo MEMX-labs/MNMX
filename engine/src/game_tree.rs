@@ -291,3 +291,153 @@ impl GameTreeBuilder {
                 }
             }
         }
+
+        moves
+    }
+
+    /// Generate adversary (MEV) moves in response to an agent action.
+    pub fn generate_adversary_moves(
+        state: &OnChainState,
+        agent_action: &ExecutionAction,
+    ) -> Vec<MevThreat> {
+        let mut threats = Vec::new();
+
+        // Only pool-interactive actions attract MEV
+        match agent_action.kind {
+            ActionKind::Swap | ActionKind::AddLiquidity | ActionKind::RemoveLiquidity => {}
+            _ => return threats,
+        }
+
+        let pool = match state
+            .pool_states
+            .iter()
+            .find(|p| p.address == agent_action.pool_address)
+        {
+            Some(p) => p,
+            None => return threats,
+        };
+
+        // Sandwich attack: profitable if agent's trade is large relative to pool
+        let impact = math::calculate_price_impact(
+            agent_action.amount,
+            pool.reserve_a,
+            pool.reserve_b,
+        );
+        if impact > 0.001 {
+            // > 0.1% price impact -> sandwich opportunity
+            let sandwich_cost = Self::estimate_sandwich_cost(agent_action.amount, pool);
+            threats.push(MevThreat::new(
+                MevKind::Sandwich,
+                math::clamp_f64(impact * 10.0, 0.0, 0.95),
+                sandwich_cost,
+                "mev_bot_sandwich",
+                &pool.address,
+            ));
+        }
+
+        // Frontrun: if there are pending txs with lower fees
+        let can_frontrun = state
+            .pending_transactions
+            .iter()
+            .any(|tx| tx.to == pool.address && tx.fee < agent_action.priority_fee * 2);
+        if can_frontrun && agent_action.amount > pool.reserve_a / 100 {
+            let frontrun_cost = agent_action.amount / 200; // ~0.5% cost
+            threats.push(MevThreat::new(
+                MevKind::Frontrun,
+                0.3,
+                frontrun_cost,
+                "mev_bot_frontrun",
+                &pool.address,
+            ));
+        }
+
+        // JIT liquidity: large swaps attract JIT providers
+        if agent_action.kind == ActionKind::Swap && agent_action.amount > pool.reserve_a / 20
+        {
+            threats.push(MevThreat::new(
+                MevKind::JitLiquidity,
+                0.4,
+                agent_action.amount / 500,
+                "jit_provider",
+                &pool.address,
+            ));
+        }
+
+        // Backrun: someone profiting from the price impact we create
+        if impact > 0.005 {
+            threats.push(MevThreat::new(
+                MevKind::Backrun,
+                math::clamp_f64(impact * 5.0, 0.0, 0.8),
+                agent_action.amount / 300,
+                "mev_bot_backrun",
+                &pool.address,
+            ));
+        }
+
+        threats
+    }
+
+    /// Simulate applying an action to a state, returning the new state.
+    pub fn simulate_action(
+        state: &OnChainState,
+        action: &ExecutionAction,
+    ) -> OnChainState {
+        let mut new_state = state.clone();
+        new_state.slot += 1;
+
+        match action.kind {
+            ActionKind::Swap => {
+                Self::simulate_swap(&mut new_state, action);
+            }
+            ActionKind::Transfer => {
+                // Deduct from source balance
+                if let Some(bal) = new_state.token_balances.get_mut(&action.token_mint) {
+                    *bal = bal.saturating_sub(action.amount);
+                }
+                // Add to destination (tracked if we know it)
+                let dest_bal = new_state
+                    .token_balances
+                    .entry(action.destination.clone())
+                    .or_insert(0);
+                *dest_bal = dest_bal.saturating_add(action.amount);
+            }
+            ActionKind::Stake | ActionKind::Unstake => {
+                // Staking locks tokens; unstaking releases them
+                if let Some(bal) = new_state.token_balances.get_mut(&action.token_mint) {
+                    if action.kind == ActionKind::Stake {
+                        *bal = bal.saturating_sub(action.amount);
+                    } else {
+                        *bal = bal.saturating_add(action.amount);
+                    }
+                }
+            }
+            ActionKind::Liquidate => {
+                // Gain the liquidation bonus
+                let bonus = action.amount / 20; // 5% liquidation bonus
+                let bal = new_state
+                    .token_balances
+                    .entry(action.token_mint.clone())
+                    .or_insert(0);
+                *bal = bal.saturating_add(bonus);
+            }
+            ActionKind::AddLiquidity => {
+                Self::simulate_add_liquidity(&mut new_state, action);
+            }
+            ActionKind::RemoveLiquidity => {
+                Self::simulate_remove_liquidity(&mut new_state, action);
+            }
+        }
+
+        new_state
+    }
+
+    /// Simulate a swap on the state.
+    fn simulate_swap(state: &mut OnChainState, action: &ExecutionAction) {
+        let pool_idx = state
+            .pool_states
+            .iter()
+            .position(|p| p.address == action.pool_address);
+
+        if let Some(idx) = pool_idx {
+            let pool = &state.pool_states[idx];
+            let is_a_to_b = action.token_mint == pool.token_a_mint;
