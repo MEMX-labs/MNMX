@@ -156,3 +156,72 @@ pub fn harmonic_mean(values: &[f64]) -> f64 {
         .sum();
     if reciprocal_sum.is_infinite() || reciprocal_sum.abs() < f64::EPSILON {
         return 0.0;
+    }
+    values.len() as f64 / reciprocal_sum
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clamp() {
+        assert_eq!(clamp_f64(5.0, 0.0, 10.0), 5.0);
+        assert_eq!(clamp_f64(-1.0, 0.0, 10.0), 0.0);
+        assert_eq!(clamp_f64(15.0, 0.0, 10.0), 10.0);
+    }
+
+    #[test]
+    fn test_normalize_to_range() {
+        assert!((normalize_to_range(5.0, 0.0, 10.0) - 0.5).abs() < 1e-9);
+        assert!((normalize_to_range(0.0, 0.0, 10.0) - 0.0).abs() < 1e-9);
+        assert!((normalize_to_range(10.0, 0.0, 10.0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_weighted_average() {
+        let vals = [1.0, 2.0, 3.0];
+        let wts = [1.0, 1.0, 1.0];
+        assert!((weighted_average(&vals, &wts) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_geometric_mean() {
+        let vals = [2.0, 8.0];
+        assert!((geometric_mean(&vals) - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_variance_and_stddev() {
+        let vals = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let var = compute_variance(&vals);
+        assert!((var - 4.571).abs() < 0.01);
+        let sd = compute_std_dev(&vals);
+        assert!((sd - 2.138).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_basis_points() {
+        assert!((basis_points_to_decimal(50) - 0.005).abs() < 1e-9);
+        assert_eq!(decimal_to_basis_points(0.005), 50);
+    }
+
+    #[test]
+    fn test_lerp_inverse_lerp() {
+        assert!((lerp(0.0, 10.0, 0.5) - 5.0).abs() < 1e-9);
+        assert!((inverse_lerp(0.0, 10.0, 5.0) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_sigmoid() {
+        assert!((sigmoid(0.0) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_softmax_sums_to_one() {
+        let vals = [1.0, 2.0, 3.0];
+        let sm = softmax(&vals);
+        let total: f64 = sm.iter().sum();
+        assert!((total - 1.0).abs() < 1e-9);
+    }
+}
