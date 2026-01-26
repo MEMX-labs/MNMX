@@ -146,3 +146,44 @@ impl TranspositionTable {
     pub fn is_empty(&self) -> bool {
         self.table.is_empty()
     }
+
+    /// Hit rate as a fraction [0.0, 1.0].
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+
+    /// Total number of lookups (hits + misses).
+    pub fn total_lookups(&self) -> u64 {
+        self.hits + self.misses
+    }
+
+    /// Number of successful lookups.
+    pub fn total_hits(&self) -> u64 {
+        self.hits
+    }
+
+    /// Number of unsuccessful lookups.
+    pub fn total_misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// Number of times an entry was overwritten.
+    pub fn total_overwrites(&self) -> u64 {
+        self.overwrites
+    }
+
+    /// Increment the age counter. Called at the start of each new search.
+    pub fn new_search(&mut self) {
+        self.current_age += 1;
+    }
+
+    /// Evict the oldest entry to make room.
+    fn evict_oldest(&mut self) {
+        if self.table.is_empty() {
+            return;
+        }
