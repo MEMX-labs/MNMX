@@ -441,3 +441,117 @@ impl GameTreeBuilder {
         if let Some(idx) = pool_idx {
             let pool = &state.pool_states[idx];
             let is_a_to_b = action.token_mint == pool.token_a_mint;
+
+            let (reserve_in, reserve_out) = if is_a_to_b {
+                (pool.reserve_a, pool.reserve_b)
+            } else {
+                (pool.reserve_b, pool.reserve_a)
+            };
+
+            let output = math::constant_product_swap(
+                action.amount,
+                reserve_in,
+                reserve_out,
+                pool.fee_rate_bps,
+            );
+
+            // Update pool reserves
+            let pool = &mut state.pool_states[idx];
+            if is_a_to_b {
+                pool.reserve_a = pool.reserve_a.saturating_add(action.amount);
+                pool.reserve_b = pool.reserve_b.saturating_sub(output);
+            } else {
+                pool.reserve_b = pool.reserve_b.saturating_add(action.amount);
+                pool.reserve_a = pool.reserve_a.saturating_sub(output);
+            }
+
+            // Update token balances
+            if let Some(bal) = state.token_balances.get_mut(&action.token_mint) {
+                *bal = bal.saturating_sub(action.amount);
+            }
+
+            let out_mint = if is_a_to_b {
+                &state.pool_states[idx].token_b_mint
+            } else {
+                &state.pool_states[idx].token_a_mint
+            }
+            .clone();
+
+            let out_bal = state.token_balances.entry(out_mint).or_insert(0);
+            *out_bal = out_bal.saturating_add(output);
+        }
+    }
+
+    /// Simulate adding liquidity.
+    fn simulate_add_liquidity(state: &mut OnChainState, action: &ExecutionAction) {
+        if let Some(pool) = state
+            .pool_states
+            .iter_mut()
+            .find(|p| p.address == action.pool_address)
+        {
+            let is_token_a = action.token_mint == pool.token_a_mint;
+            if is_token_a {
+                pool.reserve_a = pool.reserve_a.saturating_add(action.amount);
+                // Proportional token B deposit
+                let proportional_b = if pool.reserve_a > 0 {
+                    (action.amount as u128 * pool.reserve_b as u128
+                        / pool.reserve_a as u128) as u64
+                } else {
+                    action.amount
+                };
+                pool.reserve_b = pool.reserve_b.saturating_add(proportional_b);
+            } else {
+                pool.reserve_b = pool.reserve_b.saturating_add(action.amount);
+            }
+            pool.liquidity = (pool.reserve_a as u128).saturating_mul(pool.reserve_b as u128);
+        }
+
+        if let Some(bal) = state.token_balances.get_mut(&action.token_mint) {
+            *bal = bal.saturating_sub(action.amount);
+        }
+    }
+
+    /// Simulate removing liquidity.
+    fn simulate_remove_liquidity(state: &mut OnChainState, action: &ExecutionAction) {
+        if let Some(pool) = state
+            .pool_states
+            .iter_mut()
+            .find(|p| p.address == action.pool_address)
+        {
+            let share = if pool.reserve_a > 0 {
+                math::clamp_f64(action.amount as f64 / pool.reserve_a as f64, 0.0, 1.0)
+            } else {
+                0.0
+            };
+            let removed_a = (pool.reserve_a as f64 * share) as u64;
+            let removed_b = (pool.reserve_b as f64 * share) as u64;
+            pool.reserve_a = pool.reserve_a.saturating_sub(removed_a);
+            pool.reserve_b = pool.reserve_b.saturating_sub(removed_b);
+            pool.liquidity = (pool.reserve_a as u128).saturating_mul(pool.reserve_b as u128);
+
+            let mint_a = pool.token_a_mint.clone();
+            let mint_b = pool.token_b_mint.clone();
+
+            let bal_a = state.token_balances.entry(mint_a).or_insert(0);
+            *bal_a = bal_a.saturating_add(removed_a);
+
+            let bal_b = state.token_balances.entry(mint_b).or_insert(0);
+            *bal_b = bal_b.saturating_add(removed_b);
+        }
+    }
+
+    /// Simulate an MEV response modifying the state.
+    pub fn simulate_mev_response(
+        state: &OnChainState,
+        threat: &MevThreat,
+    ) -> OnChainState {
+        let action = Self::threat_to_action(threat);
+        Self::simulate_action(state, &action)
+    }
+
+    /// Convert an MevThreat into an ExecutionAction for simulation.
+    fn threat_to_action(threat: &MevThreat) -> ExecutionAction {
+        let kind = match threat.kind {
+            MevKind::Sandwich | MevKind::Frontrun | MevKind::Backrun => ActionKind::Swap,
+            MevKind::JitLiquidity => ActionKind::AddLiquidity,
+        };
