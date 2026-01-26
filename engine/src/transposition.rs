@@ -187,3 +187,62 @@ impl TranspositionTable {
         if self.table.is_empty() {
             return;
         }
+
+        // Find the entry with the smallest age
+        let oldest_key = self
+            .table
+            .iter()
+            .min_by_key(|(_, entry)| entry.age)
+            .map(|(key, _)| key.clone());
+
+        if let Some(key) = oldest_key {
+            self.table.remove(&key);
+        }
+    }
+
+    /// Evict all entries older than a given age threshold.
+    pub fn evict_older_than(&mut self, min_age: u64) {
+        self.table.retain(|_, entry| entry.age >= min_age);
+    }
+
+    /// Utilization as a fraction of max_entries.
+    pub fn utilization(&self) -> f64 {
+        if self.max_entries == 0 {
+            return 0.0;
+        }
+        self.table.len() as f64 / self.max_entries as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_store_and_lookup_exact() {
+        let mut tt = TranspositionTable::new(1000);
+        tt.store(
+            "hash1".to_string(),
+            3,
+            42.0,
+            TranspositionFlag::Exact,
+            None,
+        );
+        let result = tt.lookup("hash1", 3, f64::NEG_INFINITY, f64::INFINITY);
+        assert_eq!(result, Some(42.0));
+    }
+
+    #[test]
+    fn test_lookup_too_shallow() {
+        let mut tt = TranspositionTable::new(1000);
+        tt.store(
+            "hash1".to_string(),
+            2,
+            42.0,
+            TranspositionFlag::Exact,
+            None,
+        );
+        // Requesting depth 3 but stored at depth 2
+        let result = tt.lookup("hash1", 3, f64::NEG_INFINITY, f64::INFINITY);
+        assert_eq!(result, None);
+    }
