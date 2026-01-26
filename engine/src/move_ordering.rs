@@ -190,3 +190,72 @@ impl MoveOrderer {
 
         let key = action.action_key();
         let slots = &self.killer_moves[d];
+
+        if slots[0].as_ref() == Some(&key) {
+            50.0 // Primary killer
+        } else if slots[1].as_ref() == Some(&key) {
+            25.0 // Secondary killer
+        } else {
+            0.0
+        }
+    }
+
+    /// Return the history heuristic score for this action.
+    pub fn history_score(&self, action: &ExecutionAction) -> f64 {
+        let key = action.action_key();
+        self.history_table.get(&key).copied().unwrap_or(0.0)
+    }
+
+    /// Reset all heuristic state. Called between searches if desired.
+    pub fn reset(&mut self) {
+        self.killer_moves = vec![[None, None]; MAX_DEPTH];
+        self.history_table.clear();
+        self.ordering_calls = 0;
+    }
+
+    /// Number of times order_moves has been called.
+    pub fn total_ordering_calls(&self) -> u64 {
+        self.ordering_calls
+    }
+
+    /// Number of distinct entries in the history table.
+    pub fn history_table_size(&self) -> usize {
+        self.history_table.len()
+    }
+
+    /// Increment the ordering call counter. Called internally or by the engine.
+    pub fn record_ordering_call(&mut self) {
+        self.ordering_calls += 1;
+    }
+}
+
+impl Default for MoveOrderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_state() -> OnChainState {
+        let mut balances = HashMap::new();
+        balances.insert("SOL".to_string(), 1_000_000);
+        balances.insert("USDC".to_string(), 5_000_000);
+        OnChainState {
+            token_balances: balances,
+            pool_states: vec![PoolState::new(
+                "pool1",
+                10_000_000,
+                50_000_000,
+                30,
+                "SOL",
+                "USDC",
+            )],
+            pending_transactions: Vec::new(),
+            slot: 100,
+            block_time: 1700000000,
+        }
+    }
