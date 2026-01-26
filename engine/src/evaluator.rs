@@ -193,3 +193,65 @@ impl PositionEvaluator {
             }
         }
     }
+
+    /// Estimate swap profit by computing the output minus the cost.
+    fn evaluate_swap_profit(action: &ExecutionAction, state: &OnChainState) -> f64 {
+        let pool = match Self::find_pool_for_action(action, &state.pool_states) {
+            Some(p) => p,
+            None => return 0.0,
+        };
+
+        let is_a_to_b = action.token_mint == pool.token_a_mint;
+        let (reserve_in, reserve_out) = if is_a_to_b {
+            (pool.reserve_a, pool.reserve_b)
+        } else {
+            (pool.reserve_b, pool.reserve_a)
+        };
+
+        let output = Self::constant_product_output(
+            action.amount,
+            reserve_in,
+            reserve_out,
+            pool.fee_rate_bps,
+        );
+
+        // Profit = output value - input value
+        // We normalize against the input amount.
+        if action.amount == 0 {
+            return 0.0;
+        }
+        let spot_price = reserve_out as f64 / reserve_in as f64;
+        let expected_output = action.amount as f64 * spot_price;
+        let actual_output = output as f64;
+
+        // Ratio of actual to expected (1.0 = no slippage, <1.0 = loss)
+        let efficiency = actual_output / expected_output.max(1.0);
+
+        // If efficiency is close to 1.0, profit potential is good
+        // Scale so that efficiency=1.0 -> score ~1.0
+        (efficiency - 0.5) * 2.0
+    }
+
+    /// Calculate confidence in the evaluation based on state quality.
+    ///
+    /// Returns a value between 0.0 (no confidence) and 1.0 (full confidence).
+    ///
+    /// Factors:
+    /// - Number of known pool states (more = better)
+    /// - Freshness of block time
+    /// - Pending tx count (more = more uncertainty)
+    pub fn calculate_confidence(state: &OnChainState) -> f64 {
+        let mut signals: Vec<(f64, f64)> = Vec::new();
+
+        // Pool information quality
+        let pool_score = if state.pool_states.is_empty() {
+            0.2
+        } else {
+            let valid_pools = state
+                .pool_states
+                .iter()
+                .filter(|p| p.reserve_a > 0 && p.reserve_b > 0)
+                .count();
+            math::clamp_f64(valid_pools as f64 / state.pool_states.len() as f64, 0.0, 1.0)
+        };
+        signals.push((pool_score, 2.0));
