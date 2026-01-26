@@ -78,3 +78,83 @@ impl SearchStatsCollector {
         }
         for (i, count) in other.depth_histogram.iter().enumerate() {
             if i < self.depth_histogram.len() {
+                self.depth_histogram[i] += count;
+            }
+        }
+    }
+
+    /// Get the count of nodes explored at a given depth.
+    pub fn nodes_at_depth(&self, depth: u32) -> u64 {
+        let idx = depth as usize;
+        if idx < self.depth_histogram.len() {
+            self.depth_histogram[idx]
+        } else {
+            0
+        }
+    }
+
+    /// Branching factor: average children per internal node.
+    pub fn average_branching_factor(&self) -> f64 {
+        if self.max_depth_reached == 0 || self.nodes_explored <= 1 {
+            return 0.0;
+        }
+        // Estimate from total nodes and depth: b^d = N => b = N^(1/d)
+        let n = self.nodes_explored as f64;
+        let d = self.max_depth_reached as f64;
+        n.powf(1.0 / d)
+    }
+
+    /// Pruning efficiency: fraction of nodes pruned out of total candidate nodes.
+    pub fn pruning_efficiency(&self) -> f64 {
+        let total = self.nodes_explored + self.nodes_pruned;
+        if total == 0 {
+            return 0.0;
+        }
+        self.nodes_pruned as f64 / total as f64
+    }
+}
+
+impl Default for SearchStatsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stats_collector() {
+        let mut collector = SearchStatsCollector::new();
+        collector.record_node(0);
+        collector.record_node(1);
+        collector.record_node(1);
+        collector.record_node(2);
+        collector.record_pruned();
+        collector.record_pruned();
+        collector.finalize();
+
+        let stats = collector.to_search_stats();
+        assert_eq!(stats.nodes_explored, 4);
+        assert_eq!(stats.nodes_pruned, 2);
+        assert_eq!(stats.max_depth_reached, 2);
+    }
+
+    #[test]
+    fn test_merge() {
+        let mut a = SearchStatsCollector::new();
+        a.record_node(0);
+        a.record_node(1);
+
+        let mut b = SearchStatsCollector::new();
+        b.record_node(0);
+        b.record_node(2);
+        b.record_pruned();
+
+        a.merge(&b);
+        assert_eq!(a.nodes_explored, 4);
+        assert_eq!(a.nodes_pruned, 1);
+        assert_eq!(a.max_depth_reached, 2);
+    }
+}
