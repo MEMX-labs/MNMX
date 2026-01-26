@@ -107,3 +107,187 @@ impl GameTreeBuilder {
                         max_depth,
                         current_depth + 1,
                     );
+
+                    node.children.push(child);
+                }
+            }
+            Player::Adversary => {
+                // Adversary ply: model each threat as a possible response
+                if available_actions.is_empty() && threats.is_empty() {
+                    // No adversary response: "pass" node
+                    node.is_terminal = true;
+                    node.score = self.evaluator.evaluate_static(state);
+                    return;
+                }
+
+                // Create one child per threat / adversary action
+                let adversary_actions = if !available_actions.is_empty() {
+                    available_actions.to_vec()
+                } else {
+                    threats
+                        .iter()
+                        .map(|t| Self::threat_to_action(t))
+                        .collect()
+                };
+
+                if adversary_actions.is_empty() {
+                    node.is_terminal = true;
+                    node.score = self.evaluator.evaluate_static(state);
+                    return;
+                }
+
+                for adv_action in &adversary_actions {
+                    let new_state = Self::simulate_action(state, adv_action);
+                    let child_hash = Self::hash_state(&new_state);
+                    let mut child = GameNode::new_child(
+                        adv_action.clone(),
+                        child_hash,
+                        current_depth + 1,
+                        Player::Agent,
+                    );
+
+                    // Agent gets to respond again with the original action set
+                    let agent_moves = Self::generate_agent_moves(&new_state);
+                    self.build_recursive(
+                        &mut child,
+                        &new_state,
+                        &agent_moves,
+                        threats,
+                        max_depth,
+                        current_depth + 1,
+                    );
+
+                    node.children.push(child);
+                }
+
+                // Also add a "no MEV" child where the adversary does nothing
+                let pass_hash = format!("{}_pass", node.state_hash);
+                let mut pass_child = GameNode {
+                    action: None,
+                    state_hash: pass_hash,
+                    children: Vec::new(),
+                    score: 0.0,
+                    depth: current_depth + 1,
+                    is_terminal: false,
+                    player: Player::Agent,
+                };
+                let agent_moves = Self::generate_agent_moves(state);
+                self.build_recursive(
+                    &mut pass_child,
+                    state,
+                    &agent_moves,
+                    threats,
+                    max_depth,
+                    current_depth + 1,
+                );
+                node.children.push(pass_child);
+            }
+        }
+    }
+
+    /// Expand a single node by generating its children.
+    pub fn expand_node(&self, node: &mut GameNode, state: &OnChainState) {
+        if node.is_terminal || !node.children.is_empty() {
+            return;
+        }
+
+        match node.player {
+            Player::Agent => {
+                let moves = Self::generate_agent_moves(state);
+                for action in moves {
+                    let new_state = Self::simulate_action(state, &action);
+                    let hash = Self::hash_state(&new_state);
+                    let child =
+                        GameNode::new_child(action, hash, node.depth + 1, Player::Adversary);
+                    node.children.push(child);
+                }
+            }
+            Player::Adversary => {
+                // Generate adversary responses based on the node's action
+                if let Some(ref action) = node.action {
+                    let threats = Self::generate_adversary_moves(state, action);
+                    for threat in threats {
+                        let adv_action = Self::threat_to_action(&threat);
+                        let new_state = Self::simulate_action(state, &adv_action);
+                        let hash = Self::hash_state(&new_state);
+                        let child = GameNode::new_child(
+                            adv_action,
+                            hash,
+                            node.depth + 1,
+                            Player::Agent,
+                        );
+                        node.children.push(child);
+                    }
+                }
+            }
+        }
+
+        if node.children.is_empty() {
+            node.is_terminal = true;
+            node.score = self.evaluator.evaluate_static(state);
+        }
+    }
+
+    /// Generate candidate moves for the Agent based on the current state.
+    ///
+    /// Inspects token balances and available pools to create feasible actions.
+    pub fn generate_agent_moves(state: &OnChainState) -> Vec<ExecutionAction> {
+        let mut moves = Vec::new();
+
+        for pool in &state.pool_states {
+            // Try swapping token A -> B
+            if let Some(&balance_a) = state.token_balances.get(&pool.token_a_mint) {
+                if balance_a > 0 && pool.reserve_a > 0 && pool.reserve_b > 0 {
+                    // Swap a fraction: 10%, 25%, 50%
+                    for &frac in &[10u64, 25, 50] {
+                        let amount = balance_a.saturating_mul(frac) / 100;
+                        if amount > 0 {
+                            moves.push(ExecutionAction::new(
+                                ActionKind::Swap,
+                                &pool.token_a_mint,
+                                amount,
+                                &pool.token_b_mint,
+                                50, // 0.5% default slippage tolerance
+                                &pool.address,
+                                5000,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Try swapping token B -> A
+            if let Some(&balance_b) = state.token_balances.get(&pool.token_b_mint) {
+                if balance_b > 0 && pool.reserve_a > 0 && pool.reserve_b > 0 {
+                    for &frac in &[10u64, 25, 50] {
+                        let amount = balance_b.saturating_mul(frac) / 100;
+                        if amount > 0 {
+                            moves.push(ExecutionAction::new(
+                                ActionKind::Swap,
+                                &pool.token_b_mint,
+                                amount,
+                                &pool.token_a_mint,
+                                50,
+                                &pool.address,
+                                5000,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Try adding liquidity
+            if let Some(&bal) = state.token_balances.get(&pool.token_a_mint) {
+                if bal > 10_000 {
+                    moves.push(ExecutionAction::new(
+                        ActionKind::AddLiquidity,
+                        &pool.token_a_mint,
+                        bal / 4,
+                        &pool.address,
+                        100,
+                        &pool.address,
+                        5000,
+                    ));
+                }
+            }
+        }
