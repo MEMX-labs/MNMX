@@ -214,3 +214,120 @@ impl BridgeAdapter for MockBridge {
         // Check that the pair is supported
         let pair = (from_token.chain, to_token.chain);
         if !self.supported.contains(&pair) {
+            return None;
+        }
+        if amount <= 0.0 {
+            return None;
+        }
+
+        let fee = amount * self.fee_rate;
+        let slippage = self.compute_slippage(amount);
+        let output = (amount - fee) * (1.0 - slippage);
+
+        // Stablecoin-to-stablecoin transfers have tighter spreads
+        let output = if from_token.is_stablecoin() && to_token.is_stablecoin() {
+            (amount - fee) * (1.0 - slippage * 0.5)
+        } else {
+            output
+        };
+
+        // Time varies by chain pair
+        let time_factor = match (from_token.chain, to_token.chain) {
+            (Chain::Ethereum, _) | (_, Chain::Ethereum) => 2.0,
+            (Chain::Solana, _) | (_, Chain::Solana) => 1.5,
+            _ => 1.0,
+        };
+        let estimated_time = (self.base_time as f64 * time_factor) as u64;
+
+        // Use a pseudo-random expiry based on seed
+        let mut rng = rand::thread_rng();
+        let expiry_offset: u64 = rng.gen_range(30..120);
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + expiry_offset;
+
+        Some(BridgeQuote {
+            bridge_name: self.bridge_name.clone(),
+            input_amount: amount,
+            output_amount: output,
+            fee,
+            estimated_time,
+            liquidity_depth: self.liquidity,
+            expires_at,
+        })
+    }
+
+    fn get_health(&self) -> BridgeHealth {
+        BridgeHealth {
+            online: self.online,
+            congestion: if self.online {
+                CongestionLevel::Low
+            } else {
+                CongestionLevel::High
+            },
+            success_rate: self.success_rate,
+            median_confirm_time: self.base_time,
+        }
+    }
+}
+
+/// Build a default bridge registry with mock bridges for testing.
+pub fn build_mock_registry() -> BridgeRegistry {
+    let mut registry = BridgeRegistry::new();
+
+    registry.register(Box::new(
+        MockBridge::new("Wormhole", 0.003, 180, 5_000_000.0),
+    ));
+    registry.register(Box::new(
+        MockBridge::new("deBridge", 0.004, 120, 2_000_000.0),
+    ));
+    registry.register(Box::new(
+        MockBridge::new("LayerZero", 0.002, 60, 10_000_000.0),
+    ));
+    registry.register(Box::new(
+        MockBridge::new("Allbridge", 0.005, 90, 1_000_000.0),
+    ));
+
+    registry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_registry_registration() {
+        let registry = build_mock_registry();
+        assert_eq!(registry.bridge_count(), 4);
+    }
+
+    #[test]
+    fn test_get_bridges_for_pair() {
+        let registry = build_mock_registry();
+        let bridges = registry.get_bridges_for_pair(Chain::Ethereum, Chain::Arbitrum);
+        assert!(!bridges.is_empty());
+    }
+
+    #[test]
+    fn test_mock_bridge_quote() {
+        let bridge = MockBridge::new("Test", 0.003, 120, 1_000_000.0);
+        let from = Token::new("USDC", Chain::Ethereum, 6, "0xA0b8...");
+        let to = Token::new("USDC", Chain::Arbitrum, 6, "0xB0c9...");
+        let quote = bridge.get_quote(&from, &to, 1000.0);
+        assert!(quote.is_some());
+        let q = quote.unwrap();
+        assert!(q.output_amount > 0.0);
+        assert!(q.output_amount < 1000.0);
+        assert!(q.fee > 0.0);
+    }
+
+    #[test]
+    fn test_offline_bridge_no_quote() {
+        let bridge = MockBridge::new("Offline", 0.003, 120, 1_000_000.0).with_online(false);
+        let from = Token::new("USDC", Chain::Ethereum, 6, "0xA0b8...");
+        let to = Token::new("USDC", Chain::Arbitrum, 6, "0xB0c9...");
+        assert!(bridge.get_quote(&from, &to, 1000.0).is_none());
+    }
+}
