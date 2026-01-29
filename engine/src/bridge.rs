@@ -131,3 +131,86 @@ impl MockBridge {
             base_time,
             liquidity,
             online: true,
+            success_rate: 0.98,
+            _seed: 42,
+        }
+    }
+
+    pub fn with_pairs(mut self, pairs: Vec<(Chain, Chain)>) -> Self {
+        self.supported = pairs;
+        self
+    }
+
+    pub fn with_online(mut self, online: bool) -> Self {
+        self.online = online;
+        self
+    }
+
+    pub fn with_success_rate(mut self, rate: f64) -> Self {
+        self.success_rate = rate;
+        self
+    }
+
+    fn default_pairs() -> Vec<(Chain, Chain)> {
+        let chains = [
+            Chain::Ethereum,
+            Chain::Arbitrum,
+            Chain::Base,
+            Chain::Polygon,
+            Chain::Optimism,
+            Chain::BnbChain,
+            Chain::Avalanche,
+        ];
+        let mut pairs = Vec::new();
+        for &a in &chains {
+            for &b in &chains {
+                if a != b {
+                    pairs.push((a, b));
+                }
+            }
+        }
+        // Add Solana connections to major chains
+        for &c in &[Chain::Ethereum, Chain::BnbChain, Chain::Polygon, Chain::Avalanche] {
+            pairs.push((Chain::Solana, c));
+            pairs.push((c, Chain::Solana));
+        }
+        pairs
+    }
+
+    /// Compute a deterministic-ish slippage based on amount and liquidity.
+    fn compute_slippage(&self, amount: f64) -> f64 {
+        if self.liquidity <= 0.0 {
+            return 0.05;
+        }
+        let ratio = amount / self.liquidity;
+        // Quadratic slippage model: higher amounts get worse slippage
+        let slippage = ratio * ratio * 0.1 + ratio * 0.001;
+        if slippage > 0.1 {
+            0.1
+        } else {
+            slippage
+        }
+    }
+}
+
+impl BridgeAdapter for MockBridge {
+    fn name(&self) -> &str {
+        &self.bridge_name
+    }
+
+    fn supported_chains(&self) -> Vec<(Chain, Chain)> {
+        self.supported.clone()
+    }
+
+    fn get_quote(
+        &self,
+        from_token: &Token,
+        to_token: &Token,
+        amount: f64,
+    ) -> Option<BridgeQuote> {
+        if !self.online {
+            return None;
+        }
+        // Check that the pair is supported
+        let pair = (from_token.chain, to_token.chain);
+        if !self.supported.contains(&pair) {
