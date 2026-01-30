@@ -89,3 +89,68 @@ impl MinimaxEngine {
             if self.should_stop_search(depth) {
                 break;
             }
+
+            let (score, actions_found) = self.search_root(
+                state,
+                actions,
+                &threats,
+                depth,
+                previous_best_score,
+            );
+
+            if self.aborted {
+                break;
+            }
+
+            let elapsed = self.elapsed_ms();
+            self.stats.record_depth_completed(depth, elapsed);
+
+            // Check for instability: best move changed
+            if !actions_found.is_empty() && !best_actions.is_empty() {
+                let changed = actions_found
+                    .first()
+                    .map(|a| a.action_key())
+                    != best_actions.first().map(|a| a.action_key());
+
+                if changed {
+                    self.stats.record_best_move_change();
+                    self.time_manager.extend(ExtendReason::Instability);
+                }
+            }
+
+            // Check for score drop
+            if depth > 1 && score < previous_best_score - 1.0 {
+                self.time_manager.extend(ExtendReason::ScoreDrop);
+            }
+
+            if !actions_found.is_empty() {
+                best_score = score;
+                best_actions = actions_found;
+            }
+
+            previous_best_score = best_score;
+
+            log::debug!(
+                "depth={} score={:.3} nodes={} pruned={} time={}ms",
+                depth,
+                best_score,
+                self.stats.total_nodes(),
+                self.stats.total_pruned(),
+                elapsed,
+            );
+        }
+
+        let total_cost: u64 = best_actions.iter().map(|a| a.estimated_total_fee()).sum();
+
+        let mut search_stats = self.stats.to_search_stats();
+        search_stats.time_ms = self.elapsed_ms();
+        search_stats.tt_hits = self.transposition_table.total_hits();
+        search_stats.tt_misses = self.transposition_table.total_misses();
+
+        ExecutionPlan {
+            actions: best_actions,
+            expected_score: best_score,
+            total_cost,
+            search_stats,
+        }
+    }
