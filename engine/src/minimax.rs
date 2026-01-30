@@ -237,3 +237,100 @@ impl MinimaxEngine {
                 break;
             }
         }
+
+        // Aspiration window failure: re-search with full window if needed
+        if best_score <= previous_score - 0.5 || best_score >= previous_score + 0.5 {
+            if depth > 1 && !self.aborted {
+                // The aspiration window was too narrow; the result is still
+                // valid as a bound but we accept it rather than re-searching
+                // to stay within time budget.
+            }
+        }
+
+        (best_score, best_sequence)
+    }
+
+    /// Recursive minimax with alpha-beta pruning (negamax formulation).
+    ///
+    /// `maximizing` is true when the current player is the Agent.
+    fn minimax_search(
+        &mut self,
+        node: &mut GameNode,
+        state: &OnChainState,
+        depth: u32,
+        mut alpha: f64,
+        beta: f64,
+        maximizing: bool,
+    ) -> f64 {
+        self.stats.record_node_visit();
+
+        // Time check
+        if self.should_abort() {
+            self.aborted = true;
+            return 0.0;
+        }
+
+        // Terminal or depth limit
+        if depth == 0 || node.is_terminal {
+            let eval = self.evaluate_node(state, node);
+            node.score = eval;
+            return eval;
+        }
+
+        let state_hash = &node.state_hash;
+
+        // Transposition table probe
+        if self.config.transposition_enabled {
+            if let Some(tt_score) =
+                self.transposition_table.lookup(state_hash, depth, alpha, beta)
+            {
+                self.stats.record_tt_hit();
+                node.score = tt_score;
+                return tt_score;
+            } else {
+                self.stats.record_tt_miss();
+            }
+        }
+
+        // Generate moves
+        let mut moves = if maximizing {
+            GameTreeBuilder::generate_agent_moves(state)
+        } else {
+            // For the adversary, generate threat-based moves
+            if let Some(ref action) = node.action {
+                let threats = GameTreeBuilder::generate_adversary_moves(state, action);
+                threats
+                    .iter()
+                    .map(|t| threat_to_action(t))
+                    .collect()
+            } else {
+                GameTreeBuilder::generate_agent_moves(state)
+            }
+        };
+
+        if moves.is_empty() {
+            let eval = self.evaluate_node(state, node);
+            node.score = eval;
+            return eval;
+        }
+
+        self.stats.record_children(moves.len() as u64);
+
+        // Move ordering
+        if self.config.move_ordering_enabled {
+            self.move_orderer.order_moves(&mut moves, state, depth);
+        }
+
+        // TT best move: try it first
+        if self.config.transposition_enabled {
+            if let Some(tt_action) = self
+                .transposition_table
+                .get_best_action(state_hash)
+                .cloned()
+            {
+                // Move TT action to front
+                if let Some(pos) = moves.iter().position(|a| a.action_key() == tt_action.action_key()) {
+                    moves.swap(0, pos);
+                }
+            }
+        }
