@@ -334,3 +334,65 @@ impl MinimaxEngine {
                 }
             }
         }
+
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_action: Option<ExecutionAction> = None;
+        let mut tt_flag = TranspositionFlag::UpperBound;
+
+        for action in moves.iter() {
+            if self.should_abort() {
+                self.aborted = true;
+                break;
+            }
+
+            let new_state = GameTreeBuilder::simulate_action(state, action);
+            let child_hash = GameTreeBuilder::hash_state(&new_state);
+            let child_player = if maximizing {
+                Player::Adversary
+            } else {
+                Player::Agent
+            };
+
+            let mut child_node = GameNode::new_child(
+                action.clone(),
+                child_hash,
+                node.depth + 1,
+                child_player,
+            );
+
+            let score = -self.minimax_search(
+                &mut child_node,
+                &new_state,
+                depth - 1,
+                -beta,
+                -alpha,
+                !maximizing,
+            );
+
+            node.children.push(child_node);
+
+            if score > best_score {
+                best_score = score;
+                best_action = Some(action.clone());
+
+                if score > alpha {
+                    alpha = score;
+                    tt_flag = TranspositionFlag::Exact;
+                }
+            }
+
+            // Alpha-beta cutoff
+            if self.config.alpha_beta_enabled && alpha >= beta {
+                self.stats.record_prune();
+
+                if self.config.move_ordering_enabled {
+                    self.move_orderer.update_killer(depth, action);
+                    self.move_orderer.update_history(action, depth);
+                }
+
+                tt_flag = TranspositionFlag::LowerBound;
+                break;
+            }
+        }
+
+        node.score = best_score;
