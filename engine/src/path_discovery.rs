@@ -140,3 +140,92 @@ impl<'a> PathDiscovery<'a> {
 
                     // For 3-hop, only use the best bridge per leg to limit combinatorics
                     let b1_name = leg1[0].name().to_string();
+                    let b2_name = leg2[0].name().to_string();
+                    let b3_name = leg3[0].name().to_string();
+
+                    paths.push(CandidatePath {
+                        steps: vec![
+                            PathStep {
+                                from_chain,
+                                to_chain: mid1,
+                                from_token: from_token.clone(),
+                                to_token: mid1_token.clone(),
+                                bridge_name: b1_name,
+                            },
+                            PathStep {
+                                from_chain: mid1,
+                                to_chain: mid2,
+                                from_token: mid1_token.clone(),
+                                to_token: mid2_token.clone(),
+                                bridge_name: b2_name,
+                            },
+                            PathStep {
+                                from_chain: mid2,
+                                to_chain,
+                                from_token: mid2_token.clone(),
+                                to_token: to_token.clone(),
+                                bridge_name: b3_name,
+                            },
+                        ],
+                    });
+                }
+            }
+        }
+
+        paths
+    }
+
+    /// Filter out paths that are provably dominated by another path.
+    /// A path is dominated if another path uses a subset of its bridges
+    /// with fewer hops (fewer hops generally means lower fees).
+    pub fn filter_dominated_paths(&self, paths: Vec<CandidatePath>) -> Vec<CandidatePath> {
+        if paths.len() <= 1 {
+            return paths;
+        }
+
+        let mut kept = Vec::new();
+
+        for (i, path) in paths.iter().enumerate() {
+            let mut is_dominated = false;
+            for (j, other) in paths.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                // other dominates path if it has fewer hops and covers the same chain pair
+                if other.steps.len() < path.steps.len() {
+                    let same_endpoints = path.steps.first().map(|s| s.from_chain)
+                        == other.steps.first().map(|s| s.from_chain)
+                        && path.steps.last().map(|s| s.to_chain)
+                            == other.steps.last().map(|s| s.to_chain);
+
+                    let uses_same_bridge = other.steps.iter().any(|os| {
+                        path.steps.iter().any(|ps| ps.bridge_name == os.bridge_name)
+                    });
+
+                    if same_endpoints && uses_same_bridge {
+                        is_dominated = true;
+                        break;
+                    }
+                }
+            }
+            if !is_dominated {
+                kept.push(path.clone());
+            }
+        }
+
+        kept
+    }
+
+    /// Remove duplicate paths that traverse the same chain sequence with the same bridges.
+    pub fn deduplicate_paths(&self, paths: Vec<CandidatePath>) -> Vec<CandidatePath> {
+        let mut seen = std::collections::HashSet::new();
+        let mut unique = Vec::new();
+
+        for path in paths {
+            let key = path
+                .steps
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{}->{}:{}",
+                        s.from_chain.chain_id(),
