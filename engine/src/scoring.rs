@@ -300,3 +300,79 @@ mod tests {
     use super::*;
     use crate::types::{Chain, Token};
 
+    fn make_route(hops: usize, fee_per_hop: f64, amount: f64) -> Route {
+        let mut route = Route::new();
+        let mut current_amount = amount;
+        for i in 0..hops {
+            let chains = [Chain::Ethereum, Chain::Arbitrum, Chain::Base, Chain::Polygon];
+            let from_chain = chains[i % chains.len()];
+            let to_chain = chains[(i + 1) % chains.len()];
+            let fee = current_amount * fee_per_hop;
+            let output = current_amount - fee;
+            route.hops.push(RouteHop {
+                from_chain,
+                to_chain,
+                from_token: Token::new("USDC", from_chain, 6, "0xaaa"),
+                to_token: Token::new("USDC", to_chain, 6, "0xbbb"),
+                bridge: "LayerZero".to_string(),
+                input_amount: current_amount,
+                output_amount: output,
+                fee,
+                estimated_time: 120,
+            });
+            route.total_fees += fee;
+            current_amount = output;
+        }
+        route.expected_output = current_amount;
+        route.estimated_time = 120 * hops as u64;
+        route
+    }
+
+    #[test]
+    fn test_fee_normalization() {
+        let scorer = RouteScorer::with_strategy(Strategy::Minimax);
+        // 0% fee -> score near 1.0
+        assert!(scorer.normalize_fee(0.0, 1000.0) > 0.99);
+        // 1% fee -> score ~0.74
+        let s = scorer.normalize_fee(10.0, 1000.0);
+        assert!(s > 0.5 && s < 0.9);
+        // 10% fee -> low score
+        assert!(scorer.normalize_fee(100.0, 1000.0) < 0.1);
+    }
+
+    #[test]
+    fn test_speed_normalization() {
+        let scorer = RouteScorer::with_strategy(Strategy::Minimax);
+        assert!(scorer.normalize_speed(0) > 0.99);
+        assert!(scorer.normalize_speed(30) > 0.85);
+        assert!(scorer.normalize_speed(600) < 0.5);
+    }
+
+    #[test]
+    fn test_route_scoring() {
+        let scorer = RouteScorer::with_strategy(Strategy::Minimax);
+        let route1 = make_route(1, 0.003, 10000.0);
+        let route2 = make_route(3, 0.005, 10000.0);
+        let s1 = scorer.score_route(&route1);
+        let s2 = scorer.score_route(&route2);
+        // Single hop with lower fees should score better
+        assert!(s1 > s2, "single hop should beat 3-hop: {} vs {}", s1, s2);
+    }
+
+    #[test]
+    fn test_strategy_weights_valid() {
+        for strategy in &[Strategy::Minimax, Strategy::Cheapest, Strategy::Fastest, Strategy::Safest] {
+            let w = get_strategy_weights(*strategy);
+            assert!(w.is_valid(), "weights for {:?} don't sum to 1", strategy);
+        }
+    }
+
+    #[test]
+    fn test_compare_routes() {
+        let mut a = Route::new();
+        a.minimax_score = 0.8;
+        let mut b = Route::new();
+        b.minimax_score = 0.6;
+        assert_eq!(compare_routes(&a, &b), std::cmp::Ordering::Less);
+    }
+}
