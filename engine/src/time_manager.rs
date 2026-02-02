@@ -133,3 +133,84 @@ impl TimeManager {
             ExtendReason::SingleReply => 0.25,
             ExtendReason::ScoreDrop => 0.75,
         };
+
+        self.extension_factor += bonus;
+
+        // Cap at max_time_ms / base_time_ms
+        let max_factor = if self.base_time_ms > 0 {
+            self.max_time_ms as f64 / self.base_time_ms as f64
+        } else {
+            2.0
+        };
+        if self.extension_factor > max_factor {
+            self.extension_factor = max_factor;
+        }
+
+        self.extensions_granted += 1;
+    }
+
+    /// Emergency stop: always abort regardless of extensions.
+    ///
+    /// Returns `true` if elapsed time exceeds the hard maximum.
+    pub fn emergency_stop(&self, elapsed_ms: u64) -> bool {
+        elapsed_ms >= self.max_time_ms
+    }
+
+    /// Produce a flattened allocation where each depth gets a more
+    /// even share. `flatness` in [0, 1]: 1.0 = perfectly even.
+    fn flat_allocation(&self, total_ms: u64, depths: u32, flatness: f64) -> Vec<u64> {
+        if depths == 0 {
+            return Vec::new();
+        }
+
+        let even_share = total_ms / depths as u64;
+        let expo = TimeAllocation::new(total_ms, depths);
+
+        expo.per_depth
+            .iter()
+            .map(|&exp_alloc| {
+                let blended = even_share as f64 * flatness + exp_alloc as f64 * (1.0 - flatness);
+                blended as u64
+            })
+            .collect()
+    }
+
+    /// Front-loaded allocation: ~60% in first third of depths.
+    fn front_loaded_allocation(&self, total_ms: u64, depths: u32) -> Vec<u64> {
+        if depths == 0 {
+            return Vec::new();
+        }
+
+        let front_count = (depths / 3).max(1);
+        let front_budget = total_ms * 60 / 100;
+        let back_budget = total_ms - front_budget;
+        let back_count = depths - front_count;
+
+        let mut per_depth = Vec::with_capacity(depths as usize);
+
+        let front_each = if front_count > 0 {
+            front_budget / front_count as u64
+        } else {
+            0
+        };
+        let back_each = if back_count > 0 {
+            back_budget / back_count as u64
+        } else {
+            0
+        };
+
+        for i in 0..depths {
+            if i < front_count {
+                per_depth.push(front_each);
+            } else {
+                per_depth.push(back_each);
+            }
+        }
+
+        per_depth
+    }
+
+    /// Get the current extension factor (1.0 = no extensions).
+    pub fn extension_factor(&self) -> f64 {
+        self.extension_factor
+    }
