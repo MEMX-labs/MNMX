@@ -149,3 +149,127 @@ impl StateCollector {
             self.state.token_prices.insert(symbol.to_string(), price);
         }
     }
+
+    fn populate_gas_prices(&mut self) {
+        for chain in Chain::all() {
+            // Simulate slight variance around typical gas price
+            let base = chain.typical_gas_price_gwei();
+            // Deterministic "variance" based on chain id
+            let variance_factor = 1.0 + (chain.chain_id() % 7) as f64 * 0.02;
+            self.state.gas_prices.insert(*chain, base * variance_factor);
+        }
+    }
+
+    fn populate_chain_states(&mut self) {
+        for chain in Chain::all() {
+            let congestion = match chain {
+                Chain::Ethereum => CongestionLevel::Medium,
+                Chain::Polygon => CongestionLevel::Low,
+                Chain::BnbChain => CongestionLevel::Low,
+                Chain::Solana => CongestionLevel::Low,
+                _ => CongestionLevel::Low,
+            };
+            let block = match chain {
+                Chain::Ethereum => 19_500_000,
+                Chain::Solana => 250_000_000,
+                Chain::Arbitrum => 180_000_000,
+                Chain::Base => 12_000_000,
+                Chain::Polygon => 55_000_000,
+                Chain::BnbChain => 37_000_000,
+                Chain::Optimism => 118_000_000,
+                Chain::Avalanche => 44_000_000,
+            };
+            self.state.chain_states.insert(
+                *chain,
+                ChainState {
+                    chain: *chain,
+                    block_number: block,
+                    gas_price: self.get_gas_price(*chain),
+                    congestion_level: congestion,
+                },
+            );
+        }
+    }
+
+    fn populate_bridge_states(&mut self) {
+        let bridges = vec![
+            ("Wormhole", true, 5_000_000.0, 12, 180),
+            ("deBridge", true, 2_000_000.0, 5, 120),
+            ("LayerZero", true, 10_000_000.0, 20, 60),
+            ("Allbridge", true, 1_000_000.0, 3, 90),
+        ];
+        for (name, online, liq, pending, confirm_time) in bridges {
+            self.state.bridge_states.insert(
+                name.to_string(),
+                BridgeState {
+                    bridge: name.to_string(),
+                    online,
+                    liquidity_available: liq,
+                    pending_transactions: pending,
+                    average_confirmation_time: confirm_time,
+                },
+            );
+        }
+    }
+
+    fn default_token_price(symbol: &str) -> f64 {
+        match symbol.to_uppercase().as_str() {
+            "ETH" | "WETH" => 3200.0,
+            "BTC" | "WBTC" => 62000.0,
+            "SOL" => 145.0,
+            "BNB" => 580.0,
+            "AVAX" => 35.0,
+            "MATIC" | "POL" => 0.72,
+            "USDC" | "USDT" | "DAI" | "BUSD" | "FRAX" => 1.0,
+            _ => 1.0,
+        }
+    }
+}
+
+impl Default for StateCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_state_collection() {
+        let mut collector = StateCollector::new();
+        let state = collector.collect_state();
+        assert!(!state.token_prices.is_empty());
+        assert!(!state.gas_prices.is_empty());
+        assert!(!state.bridge_states.is_empty());
+    }
+
+    #[test]
+    fn test_token_price() {
+        let mut collector = StateCollector::new();
+        collector.collect_state();
+        let eth = Token::new("ETH", Chain::Ethereum, 18, "0x0");
+        let price = collector.get_token_price(&eth);
+        assert!(price > 1000.0);
+    }
+
+    #[test]
+    fn test_slippage_estimation() {
+        let collector = StateCollector::new();
+        // Small trade relative to liquidity -> low slippage
+        let slip_small = collector.estimate_slippage(100.0, 1_000_000.0);
+        assert!(slip_small < 0.001);
+        // Large trade -> higher slippage
+        let slip_large = collector.estimate_slippage(500_000.0, 1_000_000.0);
+        assert!(slip_large > slip_small);
+    }
+
+    #[test]
+    fn test_gas_price() {
+        let mut collector = StateCollector::new();
+        collector.collect_state();
+        let gas = collector.get_gas_price(Chain::Ethereum);
+        assert!(gas > 0.0);
+    }
+}
