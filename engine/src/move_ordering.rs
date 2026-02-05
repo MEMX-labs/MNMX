@@ -259,3 +259,118 @@ mod tests {
             block_time: 1700000000,
         }
     }
+
+    fn test_actions() -> Vec<ExecutionAction> {
+        vec![
+            ExecutionAction::new(ActionKind::Swap, "SOL", 100_000, "USDC", 50, "pool1", 5000),
+            ExecutionAction::new(
+                ActionKind::Liquidate,
+                "SOL",
+                200_000,
+                "vault",
+                100,
+                "pool1",
+                10000,
+            ),
+            ExecutionAction::new(
+                ActionKind::Transfer,
+                "SOL",
+                50_000,
+                "wallet2",
+                0,
+                "",
+                5000,
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_ordering_puts_liquidate_first() {
+        let orderer = MoveOrderer::new();
+        let state = test_state();
+        let mut actions = test_actions();
+        orderer.order_moves(&mut actions, &state, 0);
+        // Liquidate should be first due to high MVV-LVA score
+        assert_eq!(actions[0].kind, ActionKind::Liquidate);
+    }
+
+    #[test]
+    fn test_killer_moves() {
+        let mut orderer = MoveOrderer::new();
+        let action = ExecutionAction::new(
+            ActionKind::Swap,
+            "SOL",
+            100_000,
+            "USDC",
+            50,
+            "pool1",
+            5000,
+        );
+
+        assert_eq!(orderer.killer_bonus(&action, 3), 0.0);
+        orderer.update_killer(3, &action);
+        assert_eq!(orderer.killer_bonus(&action, 3), 50.0);
+        assert_eq!(orderer.killer_bonus(&action, 4), 0.0); // Different depth
+    }
+
+    #[test]
+    fn test_killer_replacement() {
+        let mut orderer = MoveOrderer::new();
+        let a1 = ExecutionAction::new(ActionKind::Swap, "SOL", 100, "USDC", 50, "p1", 5000);
+        let a2 = ExecutionAction::new(ActionKind::Swap, "SOL", 200, "USDC", 50, "p1", 5000);
+        let a3 = ExecutionAction::new(ActionKind::Swap, "SOL", 300, "USDC", 50, "p1", 5000);
+
+        orderer.update_killer(0, &a1);
+        assert_eq!(orderer.killer_bonus(&a1, 0), 50.0);
+
+        orderer.update_killer(0, &a2);
+        assert_eq!(orderer.killer_bonus(&a2, 0), 50.0);
+        assert_eq!(orderer.killer_bonus(&a1, 0), 25.0); // Shifted to slot 1
+
+        orderer.update_killer(0, &a3);
+        assert_eq!(orderer.killer_bonus(&a3, 0), 50.0);
+        assert_eq!(orderer.killer_bonus(&a2, 0), 25.0);
+        assert_eq!(orderer.killer_bonus(&a1, 0), 0.0); // Evicted
+    }
+
+    #[test]
+    fn test_history_heuristic() {
+        let mut orderer = MoveOrderer::new();
+        let action = ExecutionAction::new(ActionKind::Swap, "SOL", 100, "USDC", 50, "p1", 5000);
+
+        assert_eq!(orderer.history_score(&action), 0.0);
+        orderer.update_history(&action, 3); // bonus = 9
+        assert!((orderer.history_score(&action) - 9.0).abs() < 0.001);
+        orderer.update_history(&action, 4); // bonus = 16, total = 25
+        assert!((orderer.history_score(&action) - 25.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_reset() {
+        let mut orderer = MoveOrderer::new();
+        let action = ExecutionAction::new(ActionKind::Swap, "SOL", 100, "USDC", 50, "p1", 5000);
+        orderer.update_killer(0, &action);
+        orderer.update_history(&action, 5);
+        orderer.reset();
+        assert_eq!(orderer.killer_bonus(&action, 0), 0.0);
+        assert_eq!(orderer.history_score(&action), 0.0);
+    }
+
+    #[test]
+    fn test_single_action_unchanged() {
+        let orderer = MoveOrderer::new();
+        let state = test_state();
+        let mut actions = vec![ExecutionAction::new(
+            ActionKind::Swap,
+            "SOL",
+            100_000,
+            "USDC",
+            50,
+            "pool1",
+            5000,
+        )];
+        let original = actions[0].clone();
+        orderer.order_moves(&mut actions, &state, 0);
+        assert_eq!(actions[0], original);
+    }
+}
