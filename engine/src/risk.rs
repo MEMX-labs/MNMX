@@ -229,3 +229,103 @@ impl RiskAssessor {
                 + (self.model.gas_multiplier - 1.0).abs());
         math::clamp_f64(hop_factor * model_factor, 0.0, 1.0)
     }
+
+    fn compute_hop_mev_risk(&self, hop: &RouteHop) -> f64 {
+        let chain_risk = match hop.from_chain {
+            Chain::Ethereum => 0.008,
+            Chain::BnbChain => 0.005,
+            Chain::Polygon => 0.004,
+            Chain::Arbitrum => 0.002,
+            _ => 0.001,
+        };
+
+        let value_factor = if hop.input_amount > 100_000.0 {
+            2.0
+        } else if hop.input_amount > 10_000.0 {
+            1.5
+        } else {
+            1.0
+        };
+
+        chain_risk * value_factor
+    }
+}
+
+impl Default for RiskAssessor {
+    fn default() -> Self {
+        Self::new(AdversarialModel::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Token;
+
+    fn make_test_route() -> Route {
+        let mut route = Route::new();
+        route.hops.push(RouteHop {
+            from_chain: Chain::Ethereum,
+            to_chain: Chain::Arbitrum,
+            from_token: Token::new("USDC", Chain::Ethereum, 6, "0xaaa"),
+            to_token: Token::new("USDC", Chain::Arbitrum, 6, "0xbbb"),
+            bridge: "Wormhole".to_string(),
+            input_amount: 10000.0,
+            output_amount: 9950.0,
+            fee: 30.0,
+            estimated_time: 180,
+        });
+        route.expected_output = 9950.0;
+        route.total_fees = 30.0;
+        route.estimated_time = 180;
+        route
+    }
+
+    #[test]
+    fn test_risk_assessment() {
+        let assessor = RiskAssessor::default();
+        let route = make_test_route();
+        let assessment = assessor.assess_route_risk(&route);
+        assert!(assessment.worst_case_output > 0.0);
+        assert!(assessment.worst_case_output < route.expected_output);
+    }
+
+    #[test]
+    fn test_worst_case_slippage() {
+        let assessor = RiskAssessor::default();
+        let worst = assessor.compute_worst_case_slippage(0.01);
+        // Default multiplier is 2.0, so 0.01 * 2 = 0.02
+        assert!((worst - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_worst_case_delay() {
+        let assessor = RiskAssessor::default();
+        let worst = assessor.compute_worst_case_delay(120);
+        // Default multiplier is 2.0, so 120 * 2 = 240
+        assert_eq!(worst, 240);
+    }
+
+    #[test]
+    fn test_mev_loss_increases_with_hops() {
+        let assessor = RiskAssessor::default();
+        let route1 = make_test_route();
+
+        let mut route2 = make_test_route();
+        route2.hops.push(RouteHop {
+            from_chain: Chain::Arbitrum,
+            to_chain: Chain::Base,
+            from_token: Token::new("USDC", Chain::Arbitrum, 6, "0xbbb"),
+            to_token: Token::new("USDC", Chain::Base, 6, "0xccc"),
+            bridge: "LayerZero".to_string(),
+            input_amount: 9950.0,
+            output_amount: 9920.0,
+            fee: 20.0,
+            estimated_time: 60,
+        });
+
+        let mev1 = assessor.estimate_mev_loss(&route1);
+        let mev2 = assessor.estimate_mev_loss(&route2);
+        assert!(mev2 > mev1);
+    }
+}
