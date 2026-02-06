@@ -476,3 +476,99 @@ impl MinimaxSearcher {
             current_token: hop.to_token.clone(),
             remaining_amount: hop.output_amount,
             hops_taken: new_hops,
+            bridges_used: new_bridges,
+            total_fees: node.total_fees + hop.fee,
+            total_time: node.total_time + hop.estimated_time,
+            depth: node.depth + 1,
+        }
+    }
+
+    fn build_route_from_node(&self, node: &SearchNode) -> Route {
+        Route {
+            hops: node.hops_taken.clone(),
+            expected_output: node.remaining_amount,
+            guaranteed_minimum: node.remaining_amount * 0.95, // conservative estimate
+            total_fees: node.total_fees,
+            estimated_time: node.total_time,
+            minimax_score: 0.0, // will be set by caller
+        }
+    }
+
+    fn store_in_tt(&mut self, hash: u64, depth: u32, score: f64, flag: TranspositionFlag) {
+        self.transposition_table.insert(TranspositionEntry {
+            hash,
+            depth,
+            score,
+            flag,
+            best_move: None,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::build_mock_registry;
+    use crate::types::Strategy;
+
+    fn default_config() -> RouterConfig {
+        RouterConfig {
+            strategy: Strategy::Minimax,
+            max_hops: 2,
+            ..RouterConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_minimax_finds_route() {
+        let registry = build_mock_registry();
+        let mut searcher = MinimaxSearcher::new(default_config());
+        let from = Token::new("USDC", Chain::Ethereum, 6, "0xaaa");
+        let to = Token::new("USDC", Chain::Arbitrum, 6, "0xbbb");
+
+        let (route, stats) = searcher.search(
+            &registry,
+            Chain::Ethereum,
+            &from,
+            Chain::Arbitrum,
+            &to,
+            10000.0,
+        );
+
+        assert!(route.is_some(), "should find at least one route");
+        let r = route.unwrap();
+        assert!(!r.hops.is_empty());
+        assert!(r.expected_output > 0.0);
+        assert!(stats.nodes_explored > 0);
+    }
+
+    #[test]
+    fn test_adversarial_model_worsens_output() {
+        let config = default_config();
+        let searcher = MinimaxSearcher::new(config);
+
+        let hop = RouteHop {
+            from_chain: Chain::Ethereum,
+            to_chain: Chain::Arbitrum,
+            from_token: Token::new("USDC", Chain::Ethereum, 6, "0xa"),
+            to_token: Token::new("USDC", Chain::Arbitrum, 6, "0xb"),
+            bridge: "Wormhole".to_string(),
+            input_amount: 10000.0,
+            output_amount: 9970.0,
+            fee: 30.0,
+            estimated_time: 180,
+        };
+
+        let adversarial = searcher.apply_adversarial_model(&hop);
+        assert!(
+            adversarial.output_amount < hop.output_amount,
+            "adversarial output {} should be less than normal {}",
+            adversarial.output_amount,
+            hop.output_amount
+        );
+        assert!(adversarial.fee >= hop.fee);
+        assert!(adversarial.estimated_time >= hop.estimated_time);
+    }
+
+    #[test]
+    fn test_generate_moves_no_loops() {
