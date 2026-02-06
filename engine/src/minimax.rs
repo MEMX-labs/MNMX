@@ -189,3 +189,99 @@ impl MinimaxSearcher {
             )
         } else {
             self.minimize(
+                registry,
+                node,
+                target_chain,
+                target_token,
+                max_depth,
+                pruning,
+                stats,
+                &moves,
+                &ordering,
+                state_hash,
+            )
+        }
+    }
+
+    /// Maximizing node: player picks the move with the highest score.
+    fn maximize(
+        &mut self,
+        registry: &BridgeRegistry,
+        node: &SearchNode,
+        target_chain: Chain,
+        target_token: &Token,
+        max_depth: u32,
+        pruning: &mut PruningState,
+        stats: &mut SearchStatsCollector,
+        moves: &[RouteHop],
+        ordering: &[usize],
+        state_hash: u64,
+    ) -> (f64, Option<Route>) {
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_route: Option<Route> = None;
+
+        for &idx in ordering {
+            let hop = &moves[idx];
+
+            let child = self.apply_move(node, hop);
+            // After player moves, adversary responds (minimizing)
+            let (score, route) = self.minimax(
+                registry,
+                &child,
+                target_chain,
+                target_token,
+                max_depth,
+                false,
+                pruning,
+                stats,
+            );
+
+            if score > best_score {
+                best_score = score;
+                best_route = route;
+            }
+
+            pruning.update_bounds(score, true);
+            if pruning.should_prune(best_score, true) {
+                stats.record_pruned();
+                pruning.record_killer_move(
+                    node.depth as usize,
+                    MoveKey::from_hop(hop),
+                );
+                pruning.record_history(MoveKey::from_hop(hop), node.depth);
+                break;
+            }
+        }
+
+        let flag = if best_score >= pruning.beta {
+            TranspositionFlag::LowerBound
+        } else if best_score <= pruning.alpha {
+            TranspositionFlag::UpperBound
+        } else {
+            TranspositionFlag::Exact
+        };
+        self.store_in_tt(state_hash, max_depth - node.depth, best_score, flag);
+
+        (best_score, best_route)
+    }
+
+    /// Minimizing node: adversary picks the worst-case scenario for the player.
+    fn minimize(
+        &mut self,
+        registry: &BridgeRegistry,
+        node: &SearchNode,
+        target_chain: Chain,
+        target_token: &Token,
+        max_depth: u32,
+        pruning: &mut PruningState,
+        stats: &mut SearchStatsCollector,
+        moves: &[RouteHop],
+        ordering: &[usize],
+        state_hash: u64,
+    ) -> (f64, Option<Route>) {
+        let mut best_score = f64::INFINITY;
+        let mut best_route: Option<Route> = None;
+
+        // The adversary applies worst-case perturbations to each move
+        for &idx in ordering {
+            let hop = &moves[idx];
