@@ -96,3 +96,84 @@ export class PositionEvaluator {
   }
 
   // ── Gas Cost ────────────────────────────────────────────────────
+
+  /**
+   * Score inversely proportional to estimated compute-unit usage.
+   * 0 = maximum CU budget exhausted, 1 = minimal CU cost.
+   */
+  private evaluateGasCost(action: ExecutionAction): number {
+    const overhead = CU_OVERHEADS[action.kind] ?? 100_000;
+    const estimatedCU = BASE_COMPUTE_UNITS + overhead;
+    const ratio = estimatedCU / MAX_ACCEPTABLE_CU;
+    return Math.max(0, 1 - ratio);
+  }
+
+  // ── Slippage ────────────────────────────────────────────────────
+
+  /**
+   * Evaluate the slippage cost of executing `action` against the
+   * relevant pool.  Returns 1 for zero slippage, 0 for catastrophic.
+   */
+  private evaluateSlippage(
+    state: OnChainState,
+    action: ExecutionAction,
+  ): number {
+    const pool = state.poolStates.get(action.pool);
+    if (!pool) {
+      // No pool data – pessimistic assumption
+      return 0.3;
+    }
+
+    const { reserveA, reserveB, feeBps } = pool;
+
+    // Determine direction
+    const [reserveIn, reserveOut] = this.orderReserves(pool, action);
+
+    const slippageBps = calculateSlippage(action.amount, reserveIn, reserveOut, feeBps);
+    const slippagePercent = Number(slippageBps) / 100;
+
+    // Map slippage to [0, 1] via a logistic curve – 1% slippage ≈ 0.5 score
+    const k = 3; // steepness
+    return 1 / (1 + Math.exp(k * (slippagePercent - 1)));
+  }
+
+  // ── MEV Exposure ────────────────────────────────────────────────
+
+  /**
+   * Estimate the probability and expected cost of MEV attacks for
+   * this action.  Larger swaps on shallow pools are more exposed.
+   */
+  private evaluateMevExposure(
+    state: OnChainState,
+    action: ExecutionAction,
+  ): number {
+    // Only swaps and liquidity actions have meaningful MEV risk
+    if (!['swap', 'provide_liquidity', 'remove_liquidity', 'liquidate'].includes(action.kind)) {
+      return 0.95;
+    }
+
+    const pool = state.poolStates.get(action.pool);
+    if (!pool) return 0.4;
+
+    const priceImpact = estimatePriceImpact(
+      action.amount,
+      this.orderReserves(pool, action)[0],
+    );
+
+    // Sandwich probability rises with price impact
+    const sandwichProb = Math.min(priceImpact * 5, 0.9);
+
+    // Pending-tx density increases frontrun risk
+    const pendingCount = state.pendingTransactions.length;
+    const congestionFactor = Math.min(pendingCount / 50, 1);
+
+    // Slippage tolerance gives MEV bots room to operate
+    const toleranceFactor = Math.min(action.slippageBps / 300, 1);
+
+    const totalRisk = Math.min(
+      sandwichProb * 0.5 + congestionFactor * 0.25 + toleranceFactor * 0.25,
+      1,
+    );
+
+    return 1 - totalRisk;
+  }
