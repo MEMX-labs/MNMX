@@ -177,3 +177,99 @@ export class PositionEvaluator {
 
     return 1 - totalRisk;
   }
+
+  // ── Profit ──────────────────────────────────────────────────────
+
+  /**
+   * Estimate the net expected value of executing this action.
+   * Positive profit → score approaching 1; break-even → 0.5; loss → 0.
+   */
+  private evaluateProfit(
+    state: OnChainState,
+    action: ExecutionAction,
+  ): number {
+    const pool = state.poolStates.get(action.pool);
+    if (!pool) return 0.5; // no data, neutral assumption
+
+    const [reserveIn, reserveOut] = this.orderReserves(pool, action);
+
+    const outputAmount = constantProductSwap(
+      action.amount,
+      reserveIn,
+      reserveOut,
+      pool.feeBps,
+    );
+
+    // Gas cost in token-equivalent terms (very rough)
+    const overhead = CU_OVERHEADS[action.kind] ?? 100_000;
+    const gasCostLamports = BigInt(BASE_COMPUTE_UNITS + overhead) * BigInt(MICRO_LAMPORTS_PER_CU);
+    // Assume 1 token unit ≈ 1_000_000 lamports for normalisation
+    const gasCostTokens = gasCostLamports / 1_000_000n;
+
+    // Ideal output at marginal price (no impact)
+    const idealOutput = (action.amount * reserveOut) / reserveIn;
+
+    // Net value = output - gas, relative to ideal
+    if (idealOutput === 0n) return 0.5;
+
+    const netValue = outputAmount - gasCostTokens;
+    const ratio = Number(netValue) / Number(idealOutput);
+
+    // Logistic map: ratio of 1 → ~0.73, ratio > 1 → approaching 1
+    return 1 / (1 + Math.exp(-4 * (ratio - 0.5)));
+  }
+
+  // ── Confidence ──────────────────────────────────────────────────
+
+  /**
+   * Confidence in [0, 1] based on data freshness, pool availability,
+   * and balance sufficiency.
+   */
+  private computeConfidence(
+    state: OnChainState,
+    action: ExecutionAction,
+  ): number {
+    let confidence = 1.0;
+
+    // Penalise stale state
+    const now = Date.now();
+    const ageMs = now - state.timestamp;
+    if (ageMs > 10_000) {
+      confidence *= Math.max(0.5, 1 - ageMs / 60_000);
+    }
+
+    // Pool data available?
+    if (!state.poolStates.has(action.pool)) {
+      confidence *= 0.6;
+    }
+
+    // Sufficient balance for the action?
+    const balance = state.tokenBalances.get(action.tokenMintIn) ?? 0n;
+    if (balance < action.amount) {
+      confidence *= 0.3;
+    }
+
+    // Pending transaction congestion lowers confidence
+    if (state.pendingTransactions.length > 20) {
+      confidence *= 0.85;
+    }
+
+    return Math.max(0.1, confidence);
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Determine which pool reserve corresponds to the input token and
+   * which to the output.
+   */
+  private orderReserves(
+    pool: PoolState,
+    action: ExecutionAction,
+  ): [bigint, bigint] {
+    if (action.tokenMintIn === pool.tokenMintA) {
+      return [pool.reserveA, pool.reserveB];
+    }
+    return [pool.reserveB, pool.reserveA];
+  }
+}
