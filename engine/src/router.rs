@@ -178,3 +178,93 @@ impl MnmxRouter {
             &request.from_token,
             request.to_chain,
             &request.to_token,
+        );
+
+        for strategy in &alt_strategies {
+            if *strategy == request.strategy {
+                continue;
+            }
+
+            let scorer = RouteScorer::new(get_strategy_weights(*strategy));
+            let mut best_alt: Option<Route> = None;
+            let mut best_score = f64::NEG_INFINITY;
+
+            for path in &candidate_paths {
+                if let Some(mut route) = self.evaluate_candidate_path(path, request.amount) {
+                    let score = scorer.score_route(&route);
+                    route.minimax_score = score;
+                    if score > best_score {
+                        best_score = score;
+                        best_alt = Some(route);
+                    }
+                }
+            }
+
+            // Only include if different from primary
+            if let Some(alt) = best_alt {
+                let dominated_by_primary = match primary {
+                    Some(p) => {
+                        alt.hops.len() == p.hops.len()
+                            && alt
+                                .hops
+                                .iter()
+                                .zip(p.hops.iter())
+                                .all(|(a, b)| a.bridge == b.bridge)
+                    }
+                    None => false,
+                };
+                if !dominated_by_primary {
+                    alternatives.push(alt);
+                }
+            }
+        }
+
+        alternatives
+    }
+
+    /// Evaluate a candidate path by collecting quotes for each step and building a Route.
+    fn evaluate_candidate_path(
+        &self,
+        path: &CandidatePath,
+        initial_amount: f64,
+    ) -> Option<Route> {
+        let mut route = Route::new();
+        let mut current_amount = initial_amount;
+
+        for step in &path.steps {
+            let bridges = self
+                .registry
+                .get_bridges_for_pair(step.from_chain, step.to_chain);
+
+            // Find the specific bridge named in this step
+            let bridge = bridges
+                .iter()
+                .find(|b| b.name() == step.bridge_name)?;
+
+            let quote = bridge.get_quote(&step.from_token, &step.to_token, current_amount)?;
+
+            route.hops.push(RouteHop {
+                from_chain: step.from_chain,
+                to_chain: step.to_chain,
+                from_token: step.from_token.clone(),
+                to_token: step.to_token.clone(),
+                bridge: quote.bridge_name.clone(),
+                input_amount: current_amount,
+                output_amount: quote.output_amount,
+                fee: quote.fee,
+                estimated_time: quote.estimated_time,
+            });
+
+            route.total_fees += quote.fee;
+            route.estimated_time += quote.estimated_time;
+            current_amount = quote.output_amount;
+        }
+
+        route.expected_output = current_amount;
+        route.guaranteed_minimum = current_amount * 0.95;
+
+        Some(route)
+    }
+}
+
+#[cfg(test)]
