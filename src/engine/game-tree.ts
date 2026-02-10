@@ -124,3 +124,166 @@ export class GameTreeBuilder {
         description: `Frontrun on ${agentAction.kind} with estimated trade-size advantage`,
       });
     }
+
+    // JIT liquidity
+    if (agentAction.kind === 'swap' && tradeRatio > 0.01) {
+      threats.push({
+        kind: 'jit',
+        probability: Math.min(tradeRatio * 3, 0.5),
+        estimatedCost: BigInt(Math.floor(Number(agentAction.amount) * 0.002)),
+        sourceAddress: 'JITProvider1111111111111111111111111111111',
+        relatedPool: agentAction.pool,
+        description: 'JIT liquidity provision to capture swap fees',
+      });
+    }
+
+    return threats;
+  }
+
+  /**
+   * Simulate the effect of an agent action on the on-chain state,
+   * returning a new (cloned) state with updated balances and reserves.
+   */
+  simulateAction(
+    state: OnChainState,
+    action: ExecutionAction,
+  ): OnChainState {
+    const next = this.cloneState(state);
+
+    const pool = next.poolStates.get(action.pool);
+    if (!pool) return next;
+
+    switch (action.kind) {
+      case 'swap':
+        this.simulateSwap(next, action, pool);
+        break;
+      case 'transfer':
+        this.simulateTransfer(next, action);
+        break;
+      case 'provide_liquidity':
+        this.simulateAddLiquidity(next, action, pool);
+        break;
+      case 'remove_liquidity':
+        this.simulateRemoveLiquidity(next, action, pool);
+        break;
+      default:
+        // For other kinds, just deduct the amount from the input token
+        this.deductBalance(next, action.tokenMintIn, action.amount);
+        break;
+    }
+
+    next.slot += 1;
+    return next;
+  }
+
+  /**
+   * Simulate the effect of an MEV threat on the state.
+   */
+  simulateMevResponse(
+    state: OnChainState,
+    threat: MevThreat,
+  ): OnChainState {
+    const next = this.cloneState(state);
+    const pool = next.poolStates.get(threat.relatedPool);
+    if (!pool) return next;
+
+    switch (threat.kind) {
+      case 'sandwich': {
+        // The sandwich bot's frontleg trade shifts reserves adversarially
+        const shiftAmount = threat.estimatedCost / 2n;
+        pool.reserveA += shiftAmount;
+        if (pool.reserveB > shiftAmount) {
+          pool.reserveB -= shiftAmount;
+        }
+        break;
+      }
+      case 'frontrun': {
+        // Frontrunner's trade increases input reserve
+        pool.reserveA += threat.estimatedCost;
+        break;
+      }
+      case 'backrun': {
+        // Backrunner captures residual price movement – minor reserve shift
+        const shift = threat.estimatedCost / 4n;
+        if (pool.reserveB > shift) {
+          pool.reserveB -= shift;
+        }
+        break;
+      }
+      case 'jit': {
+        // JIT provider adds then removes liquidity – net effect: slight fee capture
+        pool.reserveA += threat.estimatedCost;
+        pool.reserveB += threat.estimatedCost;
+        break;
+      }
+    }
+
+    next.slot += 1;
+    return next;
+  }
+
+  /**
+   * Hash an on-chain state for transposition-table keying.
+   */
+  hashState(state: OnChainState): string {
+    return hashOnChainState(state);
+  }
+
+  // ── Private: Tree Expansion ─────────────────────────────────────
+
+  private expandNodeRecursive(
+    node: GameNode,
+    state: OnChainState,
+    actions: ExecutionAction[],
+    adversaryActions: MevThreat[],
+    depth: number,
+  ): void {
+    if (depth >= this.config.maxDepth) {
+      node.isTerminal = true;
+      return;
+    }
+
+    if (node.player === 'agent') {
+      for (const action of actions) {
+        const nextState = this.simulateAction(state, action);
+        const child: GameNode = {
+          action,
+          stateHash: hashOnChainState(nextState),
+          children: [],
+          score: 0,
+          depth: depth + 1,
+          isTerminal: false,
+          player: 'adversary',
+        };
+        node.children.push(child);
+
+        // Generate adversary moves specific to this agent action
+        const threats = this.generateAdversaryMoves(nextState, action);
+        if (threats.length > 0 && depth + 1 < this.config.maxDepth) {
+          this.expandNodeRecursive(child, nextState, actions, threats, depth + 1);
+        } else {
+          child.isTerminal = true;
+        }
+      }
+    } else {
+      for (const threat of adversaryActions) {
+        const nextState = this.simulateMevResponse(state, threat);
+        const child: GameNode = {
+          action: null,
+          stateHash: hashOnChainState(nextState),
+          children: [],
+          score: 0,
+          depth: depth + 1,
+          isTerminal: false,
+          player: 'agent',
+        };
+        // Attach threat info via a synthetic action
+        (child as any)._threat = threat;
+        node.children.push(child);
+
+        if (depth + 1 < this.config.maxDepth) {
+          this.expandNodeRecursive(child, nextState, actions, [], depth + 1);
+        } else {
+          child.isTerminal = true;
+        }
+      }
