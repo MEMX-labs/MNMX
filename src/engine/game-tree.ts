@@ -287,3 +287,163 @@ export class GameTreeBuilder {
           child.isTerminal = true;
         }
       }
+
+      // Also consider "adversary does nothing" (passes)
+      const passChild: GameNode = {
+        action: null,
+        stateHash: hashOnChainState(state),
+        children: [],
+        score: 0,
+        depth: depth + 1,
+        isTerminal: depth + 1 >= this.config.maxDepth,
+        player: 'agent',
+      };
+      node.children.push(passChild);
+
+      if (depth + 1 < this.config.maxDepth) {
+        this.expandNodeRecursive(passChild, state, actions, [], depth + 1);
+      }
+    }
+  }
+
+  private expandAgentNode(
+    node: GameNode,
+    state: OnChainState,
+    actions: ExecutionAction[],
+    adversaryActions: MevThreat[],
+  ): GameNode[] {
+    const children: GameNode[] = [];
+    for (const action of actions) {
+      const nextState = this.simulateAction(state, action);
+      const child: GameNode = {
+        action,
+        stateHash: hashOnChainState(nextState),
+        children: [],
+        score: 0,
+        depth: node.depth + 1,
+        isTerminal: node.depth + 1 >= this.config.maxDepth,
+        player: 'adversary',
+      };
+      children.push(child);
+    }
+    node.children = children;
+    return children;
+  }
+
+  private expandAdversaryNode(
+    node: GameNode,
+    state: OnChainState,
+    actions: ExecutionAction[],
+    adversaryActions: MevThreat[],
+  ): GameNode[] {
+    const children: GameNode[] = [];
+    for (const threat of adversaryActions) {
+      const nextState = this.simulateMevResponse(state, threat);
+      const child: GameNode = {
+        action: null,
+        stateHash: hashOnChainState(nextState),
+        children: [],
+        score: 0,
+        depth: node.depth + 1,
+        isTerminal: node.depth + 1 >= this.config.maxDepth,
+        player: 'agent',
+      };
+      children.push(child);
+    }
+    node.children = children;
+    return children;
+  }
+
+  // ── Private: State Simulation ───────────────────────────────────
+
+  private simulateSwap(
+    state: OnChainState,
+    action: ExecutionAction,
+    pool: PoolState,
+  ): void {
+    const [reserveIn, reserveOut, isAtoB] = action.tokenMintIn === pool.tokenMintA
+      ? [pool.reserveA, pool.reserveB, true] as const
+      : [pool.reserveB, pool.reserveA, false] as const;
+
+    const output = constantProductSwap(action.amount, reserveIn, reserveOut, pool.feeBps);
+
+    // Update balances
+    this.deductBalance(state, action.tokenMintIn, action.amount);
+    this.addBalance(state, action.tokenMintOut, output);
+
+    // Update pool reserves
+    if (isAtoB) {
+      pool.reserveA += action.amount;
+      pool.reserveB -= output;
+    } else {
+      pool.reserveB += action.amount;
+      pool.reserveA -= output;
+    }
+  }
+
+  private simulateTransfer(
+    state: OnChainState,
+    action: ExecutionAction,
+  ): void {
+    this.deductBalance(state, action.tokenMintIn, action.amount);
+  }
+
+  private simulateAddLiquidity(
+    state: OnChainState,
+    action: ExecutionAction,
+    pool: PoolState,
+  ): void {
+    const halfAmount = action.amount / 2n;
+    this.deductBalance(state, action.tokenMintIn, halfAmount);
+    this.deductBalance(state, action.tokenMintOut, halfAmount);
+    pool.reserveA += halfAmount;
+    pool.reserveB += halfAmount;
+  }
+
+  private simulateRemoveLiquidity(
+    state: OnChainState,
+    action: ExecutionAction,
+    pool: PoolState,
+  ): void {
+    const halfAmount = action.amount / 2n;
+    this.addBalance(state, action.tokenMintIn, halfAmount);
+    this.addBalance(state, action.tokenMintOut, halfAmount);
+    if (pool.reserveA > halfAmount) pool.reserveA -= halfAmount;
+    if (pool.reserveB > halfAmount) pool.reserveB -= halfAmount;
+  }
+
+  // ── Private: Utility ────────────────────────────────────────────
+
+  private cloneState(state: OnChainState): OnChainState {
+    const clonedBalances = new Map(state.tokenBalances);
+    const clonedPools = new Map<string, PoolState>();
+    for (const [k, v] of state.poolStates) {
+      clonedPools.set(k, { ...v });
+    }
+    return {
+      tokenBalances: clonedBalances,
+      poolStates: clonedPools,
+      pendingTransactions: [...state.pendingTransactions],
+      slot: state.slot,
+      timestamp: state.timestamp,
+    };
+  }
+
+  private deductBalance(
+    state: OnChainState,
+    mint: string,
+    amount: bigint,
+  ): void {
+    const current = state.tokenBalances.get(mint) ?? 0n;
+    state.tokenBalances.set(mint, current > amount ? current - amount : 0n);
+  }
+
+  private addBalance(
+    state: OnChainState,
+    mint: string,
+    amount: bigint,
+  ): void {
+    const current = state.tokenBalances.get(mint) ?? 0n;
+    state.tokenBalances.set(mint, current + amount);
+  }
+}
