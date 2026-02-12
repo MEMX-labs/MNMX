@@ -66,3 +66,72 @@ fn test_alpha_beta_pruning_reduces_nodes() {
         Chain::Ethereum,
         &eth_usdc(),
         Chain::Arbitrum,
+        &arb_usdc(),
+        10000.0,
+    );
+
+    // Larger search should explore more nodes but also prune some
+    assert!(
+        stats2.nodes_explored >= stats1.nodes_explored,
+        "deeper search should explore at least as many nodes: {} vs {}",
+        stats2.nodes_explored,
+        stats1.nodes_explored
+    );
+}
+
+#[test]
+fn test_adversarial_model_worsens_scores() {
+    let registry = build_mock_registry();
+
+    // Mild adversary
+    let mild_config = RouterConfig {
+        strategy: Strategy::Minimax,
+        max_hops: 1,
+        adversarial_model: AdversarialModel {
+            slippage_multiplier: 1.1,
+            gas_multiplier: 1.1,
+            bridge_delay_multiplier: 1.1,
+            mev_extraction: 0.001,
+            price_movement: 0.005,
+        },
+        ..RouterConfig::default()
+    };
+
+    // Harsh adversary
+    let harsh_config = RouterConfig {
+        strategy: Strategy::Minimax,
+        max_hops: 1,
+        adversarial_model: AdversarialModel {
+            slippage_multiplier: 5.0,
+            gas_multiplier: 3.0,
+            bridge_delay_multiplier: 5.0,
+            mev_extraction: 0.02,
+            price_movement: 0.10,
+        },
+        ..RouterConfig::default()
+    };
+
+    let mut mild_searcher = MinimaxSearcher::new(mild_config);
+    let (mild_route, _) = mild_searcher.search(
+        &registry,
+        Chain::Ethereum,
+        &eth_usdc(),
+        Chain::Arbitrum,
+        &arb_usdc(),
+        10000.0,
+    );
+
+    let mut harsh_searcher = MinimaxSearcher::new(harsh_config);
+    let (harsh_route, _) = harsh_searcher.search(
+        &registry,
+        Chain::Ethereum,
+        &eth_usdc(),
+        Chain::Arbitrum,
+        &arb_usdc(),
+        10000.0,
+    );
+
+    assert!(mild_route.is_some());
+    assert!(harsh_route.is_some());
+
+    let mild_score = mild_route.unwrap().minimax_score;
