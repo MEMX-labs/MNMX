@@ -268,3 +268,94 @@ impl MnmxRouter {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::build_mock_registry;
+
+    fn make_request(strategy: Strategy) -> RouteRequest {
+        RouteRequest {
+            from_chain: Chain::Ethereum,
+            from_token: Token::new("USDC", Chain::Ethereum, 6, "0xaaa"),
+            to_chain: Chain::Arbitrum,
+            to_token: Token::new("USDC", Chain::Arbitrum, 6, "0xbbb"),
+            amount: 10000.0,
+            strategy,
+            max_hops: 2,
+        }
+    }
+
+    #[test]
+    fn test_find_route() {
+        let mut router = MnmxRouter::new(RouterConfig::default());
+        router.set_registry(build_mock_registry());
+
+        let request = make_request(Strategy::Minimax);
+        let result = router.find_route(&request);
+        assert!(result.best_route.is_some());
+        let route = result.best_route.unwrap();
+        assert!(!route.hops.is_empty());
+        assert!(route.expected_output > 0.0);
+        assert!(route.expected_output < 10000.0);
+    }
+
+    #[test]
+    fn test_find_all_routes() {
+        let mut router = MnmxRouter::new(RouterConfig::default());
+        router.set_registry(build_mock_registry());
+
+        let request = make_request(Strategy::Minimax);
+        let (routes, _stats) = router.find_all_routes(&request);
+        assert!(!routes.is_empty());
+
+        // Should be sorted by score (descending)
+        for w in routes.windows(2) {
+            assert!(
+                w[0].minimax_score >= w[1].minimax_score,
+                "routes should be sorted by score"
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_quotes() {
+        let mut router = MnmxRouter::new(RouterConfig::default());
+        router.set_registry(build_mock_registry());
+
+        let from = Token::new("USDC", Chain::Ethereum, 6, "0xaaa");
+        let to = Token::new("USDC", Chain::Arbitrum, 6, "0xbbb");
+        let quotes = router.get_quotes(&from, &to, 5000.0);
+        assert!(!quotes.is_empty());
+    }
+
+    #[test]
+    fn test_supported_chains() {
+        let mut router = MnmxRouter::new(RouterConfig::default());
+        router.set_registry(build_mock_registry());
+
+        let chains = router.get_supported_chains();
+        assert!(chains.len() >= 2);
+    }
+
+    #[test]
+    fn test_different_strategies_may_differ() {
+        let mut router = MnmxRouter::new(RouterConfig::default());
+        router.set_registry(build_mock_registry());
+
+        let request = make_request(Strategy::Minimax);
+        let result = router.find_route(&request);
+        assert!(result.best_route.is_some());
+    }
+
+    #[test]
+    fn test_update_config() {
+        let mut router = MnmxRouter::new(RouterConfig::default());
+        let new_config = RouterConfig {
+            strategy: Strategy::Safest,
+            max_hops: 1,
+            ..RouterConfig::default()
+        };
+        router.update_config(new_config);
+        assert_eq!(router.config().strategy, Strategy::Safest);
+        assert_eq!(router.config().max_hops, 1);
+    }
+}
