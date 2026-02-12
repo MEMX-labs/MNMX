@@ -106,3 +106,145 @@ class OnChainState(BaseModel):
     recent_blockhash: str = Field(default="")
     wallet_address: str = Field(default="")
     token_prices_usd: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("balances")
+    @classmethod
+    def balances_non_negative(cls, v: dict[str, int]) -> dict[str, int]:
+        for mint, amount in v.items():
+            if amount < 0:
+                raise ValueError(f"Balance for {mint} cannot be negative: {amount}")
+        return v
+
+    def get_pool(self, address: str) -> PoolState | None:
+        for pool in self.pools:
+            if pool.address == address:
+                return pool
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Action / Plan models
+# ---------------------------------------------------------------------------
+
+class ExecutionAction(BaseModel):
+    """A single action the agent wants to execute on-chain."""
+    kind: ActionKind
+    pool_address: str = Field(default="")
+    token_in: str = Field(default="")
+    token_out: str = Field(default="")
+    amount_in: int = Field(default=0, ge=0)
+    min_amount_out: int = Field(default=0, ge=0)
+    max_slippage_bps: int = Field(default=50, ge=0, le=10000)
+    priority_fee_lamports: int = Field(default=5000, ge=0)
+    compute_unit_limit: int = Field(default=200_000, ge=0)
+    expiry_slot: int | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def validate_swap_fields(self) -> "ExecutionAction":
+        if self.kind == ActionKind.SWAP:
+            if not self.token_in or not self.token_out:
+                raise ValueError("Swap actions require token_in and token_out")
+            if self.amount_in == 0:
+                raise ValueError("Swap actions require a non-zero amount_in")
+        return self
+
+
+class MevThreat(BaseModel):
+    """A detected MEV threat against a pending action."""
+    kind: MevKind
+    attacker: str = Field(default="unknown")
+    estimated_profit_lamports: int = Field(default=0, ge=0)
+    estimated_victim_loss_lamports: int = Field(default=0, ge=0)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    frontrun_tx: PendingTx | None = Field(default=None)
+    backrun_tx: PendingTx | None = Field(default=None)
+    affected_pool: str = Field(default="")
+    description: str = Field(default="")
+
+
+class ExecutionPlan(BaseModel):
+    """The result of a minimax search — the optimal sequence of actions."""
+    actions: list[ExecutionAction] = Field(default_factory=list)
+    expected_value: float = Field(default=0.0)
+    worst_case_value: float = Field(default=0.0)
+    search_depth: int = Field(default=0, ge=0)
+    nodes_explored: int = Field(default=0, ge=0)
+    time_ms: float = Field(default=0.0, ge=0.0)
+    threats_mitigated: list[MevThreat] = Field(default_factory=list)
+    stats: SearchStats | None = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation models
+# ---------------------------------------------------------------------------
+
+class EvalBreakdown(BaseModel):
+    """Breakdown of how each component contributed to the evaluation score."""
+    pnl_score: float = Field(default=0.0)
+    slippage_penalty: float = Field(default=0.0)
+    mev_risk_penalty: float = Field(default=0.0)
+    gas_cost_penalty: float = Field(default=0.0)
+    timing_score: float = Field(default=0.0)
+    liquidity_score: float = Field(default=0.0)
+
+    @property
+    def total(self) -> float:
+        return (
+            self.pnl_score
+            - self.slippage_penalty
+            - self.mev_risk_penalty
+            - self.gas_cost_penalty
+            + self.timing_score
+            + self.liquidity_score
+        )
+
+
+class EvalWeights(BaseModel):
+    """Weights for each evaluation component."""
+    pnl: float = Field(default=1.0, ge=0.0)
+    slippage: float = Field(default=0.8, ge=0.0)
+    mev_risk: float = Field(default=1.2, ge=0.0)
+    gas_cost: float = Field(default=0.3, ge=0.0)
+    timing: float = Field(default=0.5, ge=0.0)
+    liquidity: float = Field(default=0.6, ge=0.0)
+
+    def apply(self, breakdown: EvalBreakdown) -> float:
+        return (
+            self.pnl * breakdown.pnl_score
+            - self.slippage * breakdown.slippage_penalty
+            - self.mev_risk * breakdown.mev_risk_penalty
+            - self.gas_cost * breakdown.gas_cost_penalty
+            + self.timing * breakdown.timing_score
+            + self.liquidity * breakdown.liquidity_score
+        )
+
+
+class EvaluationResult(BaseModel):
+    """Result of evaluating a single action against current state."""
+    score: float = Field(default=0.0)
+    breakdown: EvalBreakdown = Field(default_factory=EvalBreakdown)
+    threats: list[MevThreat] = Field(default_factory=list)
+    estimated_output: int = Field(default=0, ge=0)
+    effective_price: float = Field(default=0.0)
+    price_impact_bps: int = Field(default=0)
+    recommended: bool = Field(default=False)
+    reason: str = Field(default="")
+
+
+# ---------------------------------------------------------------------------
+# Search configuration
+# ---------------------------------------------------------------------------
+
+class TimeAllocation(BaseModel):
+    """How to allocate time across search phases."""
+    total_ms: float = Field(default=1000.0, gt=0)
+    search_fraction: float = Field(default=0.7, ge=0.0, le=1.0)
+    eval_fraction: float = Field(default=0.2, ge=0.0, le=1.0)
+    mev_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def fractions_sum_to_one(self) -> "TimeAllocation":
+        total = self.search_fraction + self.eval_fraction + self.mev_fraction
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(f"Time fractions must sum to 1.0, got {total}")
+        return self
