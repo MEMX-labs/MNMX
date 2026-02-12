@@ -248,3 +248,138 @@ class TimeAllocation(BaseModel):
         if abs(total - 1.0) > 0.01:
             raise ValueError(f"Time fractions must sum to 1.0, got {total}")
         return self
+
+
+class SearchConfig(BaseModel):
+    """Configuration for the minimax search."""
+    max_depth: int = Field(default=6, ge=1, le=20)
+    max_breadth: int = Field(default=10, ge=1, le=100)
+    alpha_beta_pruning: bool = Field(default=True)
+    use_transposition_table: bool = Field(default=True)
+    time_allocation: TimeAllocation = Field(default_factory=TimeAllocation)
+    eval_weights: EvalWeights = Field(default_factory=EvalWeights)
+    quiescence_depth: int = Field(default=2, ge=0, le=10)
+    null_move_reduction: int = Field(default=2, ge=0)
+
+
+class TranspositionEntry(BaseModel):
+    """Cache entry for previously evaluated positions."""
+    state_hash: str
+    depth: int = Field(ge=0)
+    score: float
+    best_action_index: int = Field(default=-1)
+    node_type: str = Field(default="exact")  # exact, lower_bound, upper_bound
+    age: int = Field(default=0, ge=0)
+
+
+class SearchStats(BaseModel):
+    """Statistics from a completed search."""
+    nodes_evaluated: int = Field(default=0, ge=0)
+    nodes_pruned: int = Field(default=0, ge=0)
+    tt_hits: int = Field(default=0, ge=0)
+    tt_misses: int = Field(default=0, ge=0)
+    max_depth_reached: int = Field(default=0, ge=0)
+    time_ms: float = Field(default=0.0, ge=0.0)
+    branching_factor: float = Field(default=0.0, ge=0.0)
+
+    @property
+    def tt_hit_rate(self) -> float:
+        total = self.tt_hits + self.tt_misses
+        if total == 0:
+            return 0.0
+        return self.tt_hits / total
+
+    @property
+    def pruning_efficiency(self) -> float:
+        total = self.nodes_evaluated + self.nodes_pruned
+        if total == 0:
+            return 0.0
+        return self.nodes_pruned / total
+
+
+# ---------------------------------------------------------------------------
+# Game tree models
+# ---------------------------------------------------------------------------
+
+class GameNode(BaseModel):
+    """A node in the minimax game tree."""
+    player: Player
+    state: OnChainState
+    action: ExecutionAction | None = Field(default=None)
+    score: float | None = Field(default=None)
+    children: list[GameNode] = Field(default_factory=list)
+    depth: int = Field(default=0, ge=0)
+    is_terminal: bool = Field(default=False)
+    alpha: float = Field(default=float("-inf"))
+    beta: float = Field(default=float("inf"))
+
+
+# ---------------------------------------------------------------------------
+# Simulation / Backtest result models
+# ---------------------------------------------------------------------------
+
+class SimulationConfig(BaseModel):
+    """Configuration for the local simulator."""
+    fee_bps: int = Field(default=30, ge=0, le=10000)
+    slippage_tolerance_bps: int = Field(default=50, ge=0, le=10000)
+    include_mev_simulation: bool = Field(default=True)
+    monte_carlo_iterations: int = Field(default=1000, ge=1)
+    base_gas_lamports: int = Field(default=5000, ge=0)
+    priority_fee_percentile: int = Field(default=75, ge=0, le=100)
+
+
+class SimulationResult(BaseModel):
+    """Result from simulating an action."""
+    success: bool = Field(default=True)
+    amount_out: int = Field(default=0, ge=0)
+    price_impact_bps: int = Field(default=0)
+    slippage_bps: int = Field(default=0)
+    gas_cost_lamports: int = Field(default=5000, ge=0)
+    mev_risk: float = Field(default=0.0, ge=0.0, le=1.0)
+    effective_price: float = Field(default=0.0)
+    new_state: OnChainState | None = Field(default=None)
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = Field(default=None)
+
+
+class BacktestConfig(BaseModel):
+    """Configuration for a backtesting run."""
+    initial_balance: dict[str, int] = Field(default_factory=dict)
+    fee_bps: int = Field(default=30, ge=0, le=10000)
+    slippage_model: str = Field(default="constant_product")
+    include_mev: bool = Field(default=True)
+    risk_free_rate: float = Field(default=0.05, ge=0.0)
+    benchmark_token: str = Field(default="SOL")
+
+
+class TradeRecord(BaseModel):
+    """Record of a single trade executed during backtesting."""
+    slot: int
+    action: ExecutionAction
+    amount_out: int = Field(default=0)
+    pnl_lamports: int = Field(default=0)
+    gas_cost: int = Field(default=0)
+    mev_loss: int = Field(default=0)
+    slippage_bps: int = Field(default=0)
+
+
+class BacktestResult(BaseModel):
+    """Aggregate results from a backtest run."""
+    trades: list[TradeRecord] = Field(default_factory=list)
+    total_pnl: int = Field(default=0)
+    win_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sharpe_ratio: float = Field(default=0.0)
+    max_drawdown: float = Field(default=0.0, ge=0.0, le=1.0)
+    avg_slippage_bps: float = Field(default=0.0)
+    total_mev_losses: int = Field(default=0, ge=0)
+    total_gas_costs: int = Field(default=0, ge=0)
+    equity_curve: list[float] = Field(default_factory=list)
+    num_trades: int = Field(default=0, ge=0)
+    start_slot: int = Field(default=0)
+    end_slot: int = Field(default=0)
+    duration_slots: int = Field(default=0, ge=0)
+
+
+# Rebuild forward refs for recursive / forward-referenced models
+PendingTx.model_rebuild()
+GameNode.model_rebuild()
