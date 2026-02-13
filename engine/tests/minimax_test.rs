@@ -135,3 +135,95 @@ fn test_adversarial_model_worsens_scores() {
     assert!(harsh_route.is_some());
 
     let mild_score = mild_route.unwrap().minimax_score;
+    let harsh_score = harsh_route.unwrap().minimax_score;
+
+    // Harsh adversary should produce lower minimax scores (or equal if same route)
+    assert!(
+        harsh_score <= mild_score + 0.01,
+        "harsh adversary should not improve score: mild={} harsh={}",
+        mild_score,
+        harsh_score
+    );
+}
+
+#[test]
+fn test_deeper_search_finds_better_routes() {
+    let registry = build_mock_registry();
+
+    // For Ethereum -> Base, a multi-hop route might be competitive
+    let mut searcher1 = MinimaxSearcher::new(default_config(1));
+    let (route1, _) = searcher1.search(
+        &registry,
+        Chain::Ethereum,
+        &eth_usdc(),
+        Chain::Base,
+        &base_usdc(),
+        10000.0,
+    );
+
+    let mut searcher2 = MinimaxSearcher::new(default_config(2));
+    let (route2, _) = searcher2.search(
+        &registry,
+        Chain::Ethereum,
+        &eth_usdc(),
+        Chain::Base,
+        &base_usdc(),
+        10000.0,
+    );
+
+    // Both should find routes
+    assert!(route1.is_some());
+    assert!(route2.is_some());
+
+    // Deeper search should find a route at least as good
+    let score1 = route1.unwrap().minimax_score;
+    let score2 = route2.unwrap().minimax_score;
+    assert!(
+        score2 >= score1 - 0.01,
+        "deeper search should not find worse route: depth1={} depth2={}",
+        score1,
+        score2
+    );
+}
+
+#[test]
+fn test_minimax_vs_greedy_comparison() {
+    let registry = build_mock_registry();
+
+    // Minimax strategy
+    let mut minimax_searcher = MinimaxSearcher::new(default_config(2));
+    let (minimax_route, _) = minimax_searcher.search(
+        &registry,
+        Chain::Ethereum,
+        &eth_usdc(),
+        Chain::Arbitrum,
+        &arb_usdc(),
+        50000.0,
+    );
+
+    // "Greedy" - just use cheapest strategy with 1 hop
+    let cheapest_config = RouterConfig {
+        strategy: Strategy::Cheapest,
+        max_hops: 1,
+        ..RouterConfig::default()
+    };
+    let mut cheapest_searcher = MinimaxSearcher::new(cheapest_config);
+    let (cheapest_route, _) = cheapest_searcher.search(
+        &registry,
+        Chain::Ethereum,
+        &eth_usdc(),
+        Chain::Arbitrum,
+        &arb_usdc(),
+        50000.0,
+    );
+
+    assert!(minimax_route.is_some());
+    assert!(cheapest_route.is_some());
+
+    let minimax_r = minimax_route.unwrap();
+    let cheapest_r = cheapest_route.unwrap();
+
+    // Both should produce valid routes with positive output
+    assert!(minimax_r.expected_output > 0.0);
+    assert!(cheapest_r.expected_output > 0.0);
+}
