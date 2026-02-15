@@ -144,3 +144,66 @@ fn test_lower_fees_score_higher() {
         cheap_score,
         expensive_score
     );
+}
+
+#[test]
+fn test_faster_routes_score_higher_with_fastest_strategy() {
+    let scorer = RouteScorer::with_strategy(Strategy::Fastest);
+
+    let fast_route = make_route_with_params(1, 0.003, 10000.0, 30);
+    let slow_route = make_route_with_params(1, 0.003, 10000.0, 600);
+
+    let fast_score = scorer.score_route(&fast_route);
+    let slow_score = scorer.score_route(&slow_route);
+
+    assert!(
+        fast_score > slow_score,
+        "faster route should score higher: {} vs {}",
+        fast_score,
+        slow_score
+    );
+}
+
+#[test]
+fn test_fewer_hops_score_higher_for_safety() {
+    let scorer = RouteScorer::with_strategy(Strategy::Safest);
+
+    let single_hop = make_route_with_params(1, 0.003, 10000.0, 120);
+    let triple_hop = make_route_with_params(3, 0.003, 10000.0, 120);
+
+    let single_score = scorer.score_route(&single_hop);
+    let triple_score = scorer.score_route(&triple_hop);
+
+    assert!(
+        single_score > triple_score,
+        "single hop should be safer than triple: {} vs {}",
+        single_score,
+        triple_score
+    );
+}
+
+#[test]
+fn test_empty_route_scores_zero() {
+    let scorer = RouteScorer::with_strategy(Strategy::Minimax);
+    let empty = Route::new();
+    assert_eq!(scorer.score_route(&empty), 0.0);
+}
+
+#[test]
+fn test_score_is_bounded() {
+    let scorer = RouteScorer::with_strategy(Strategy::Minimax);
+
+    for hops in 1..=3 {
+        for &fee_rate in &[0.001, 0.005, 0.01, 0.05] {
+            let route = make_route_with_params(hops, fee_rate, 10000.0, 120);
+            let score = scorer.score_route(&route);
+            assert!(
+                score >= 0.0 && score <= 1.0,
+                "score should be in [0,1]: {} (hops={}, fee={})",
+                score,
+                hops,
+                fee_rate
+            );
+        }
+    }
+}
