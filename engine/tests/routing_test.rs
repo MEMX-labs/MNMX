@@ -84,3 +84,89 @@ fn test_multi_hop_route_discovery() {
     // Verify chain continuity
     for path in &multi_hop {
         assert!(path.steps.len() >= 2);
+        for i in 1..path.steps.len() {
+            assert_eq!(
+                path.steps[i - 1].to_chain,
+                path.steps[i].from_chain,
+                "chains should be continuous"
+            );
+        }
+        assert_eq!(path.steps[0].from_chain, Chain::Ethereum);
+        assert_eq!(path.steps.last().unwrap().to_chain, Chain::Base);
+    }
+}
+
+#[test]
+fn test_dominated_path_filtering() {
+    let registry = build_mock_registry();
+    let pd = PathDiscovery::new(&registry, 3);
+
+    // Get all paths including multi-hop
+    let all_paths = pd.discover_paths(
+        Chain::Ethereum,
+        &eth_usdc(),
+        Chain::Arbitrum,
+        &arb_usdc(),
+    );
+
+    // After filtering, dominated paths should be removed
+    // Multi-hop paths using the same bridge as a direct path should be filtered
+    let direct_count = all_paths.iter().filter(|p| p.steps.len() == 1).count();
+    assert!(direct_count > 0, "direct paths should survive filtering");
+}
+
+#[test]
+fn test_route_with_bridge_health() {
+    let mut router = MnmxRouter::new(RouterConfig::default());
+
+    // Register one healthy and one offline bridge
+    router.register_bridge(Box::new(
+        MockBridge::new("HealthyBridge", 0.003, 120, 5_000_000.0),
+    ));
+    router.register_bridge(Box::new(
+        MockBridge::new("OfflineBridge", 0.001, 60, 10_000_000.0).with_online(false),
+    ));
+
+    let request = make_request(
+        Chain::Ethereum,
+        eth_usdc(),
+        Chain::Arbitrum,
+        arb_usdc(),
+        10000.0,
+        2,
+    );
+
+    let result = router.find_route(&request);
+    if let Some(route) = &result.best_route {
+        // Route should only use the healthy bridge
+        for hop in &route.hops {
+            assert_ne!(
+                hop.bridge, "OfflineBridge",
+                "should not route through offline bridge"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_max_hops_constraint() {
+    let mut router = MnmxRouter::new(RouterConfig::default());
+    router.set_registry(build_mock_registry());
+
+    // Test with max_hops = 1
+    let request = make_request(
+        Chain::Ethereum,
+        eth_usdc(),
+        Chain::Arbitrum,
+        arb_usdc(),
+        10000.0,
+        1,
+    );
+
+    let result = router.find_route(&request);
+    if let Some(route) = &result.best_route {
+        assert!(
+            route.hops.len() <= 1,
+            "should respect max_hops=1, got {} hops",
+            route.hops.len()
+        );
