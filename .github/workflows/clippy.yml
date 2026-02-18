@@ -1,0 +1,16 @@
+name: Clippy
+on:
+  push:
+    branches: [main]
+    paths: ['engine/**']
+  pull_request:
+    paths: ['engine/**']
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cd engine && cargo clippy -- -D warnings
