@@ -212,3 +212,110 @@ export interface RouteOptions {
 // ─────────────────────────────────────────────────────────────
 
 /**
+ * Weights for scoring different route properties.
+ * All values should sum to 1.0 for normalized scoring.
+ */
+export interface ScoringWeights {
+  /** Weight for fee minimization (0-1) */
+  fees: number;
+  /** Weight for slippage minimization (0-1) */
+  slippage: number;
+  /** Weight for speed (0-1) */
+  speed: number;
+  /** Weight for reliability (0-1) */
+  reliability: number;
+  /** Weight for MEV exposure minimization (0-1) */
+  mevExposure: number;
+}
+
+/**
+ * Adversarial model parameters for minimax worst-case analysis.
+ * Values > 1.0 make the model more pessimistic.
+ */
+export interface AdversarialModel {
+  /** Multiplier applied to expected slippage */
+  slippageMultiplier: number;
+  /** Multiplier applied to gas costs */
+  gasMultiplier: number;
+  /** Multiplier applied to bridge delay estimates */
+  bridgeDelayMultiplier: number;
+  /** Fraction of value extractable by MEV (0-1) */
+  mevExtraction: number;
+  /** Expected adverse price movement during execution (fraction) */
+  priceMovement: number;
+  /** Probability of bridge failure per hop (0-1) */
+  failureProbability: number;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Router Configuration
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Full router configuration.
+ */
+export interface RouterConfig {
+  /** Default routing strategy */
+  strategy: Strategy;
+  /** Default slippage tolerance in basis points */
+  slippageTolerance: number;
+  /** Route search timeout in milliseconds */
+  timeout: number;
+  /** Maximum hops allowed */
+  maxHops: number;
+  /** List of bridge names to use (empty = all registered) */
+  bridges: string[];
+  /** List of bridge names to exclude */
+  excludeBridges: string[];
+  /** Scoring weights */
+  weights: ScoringWeights;
+  /** Adversarial model parameters */
+  adversarialModel: AdversarialModel;
+  /** Supported chains configuration */
+  chains: Partial<Record<Chain, Partial<ChainConfig>>>;
+  /** Minimum liquidity depth */
+  minLiquidity: number;
+  /** Log level */
+  logLevel: LogLevel;
+  /** Quote validity duration in milliseconds */
+  quoteValidityMs: number;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Bridge Interfaces
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Parameters for requesting a bridge quote.
+ */
+export interface QuoteParams {
+  /** Source chain */
+  fromChain: Chain;
+  /** Destination chain */
+  toChain: Chain;
+  /** Token being sent */
+  fromToken: Token;
+  /** Token being received */
+  toToken: Token;
+  /** Amount to bridge (human-readable) */
+  amount: string;
+  /** Slippage tolerance in basis points */
+  slippageTolerance: number;
+  /** Sender address */
+  senderAddress?: string;
+  /** Recipient address */
+  recipientAddress?: string;
+}
+
+/**
+ * A quote from a bridge protocol.
+ */
+export interface BridgeQuote {
+  /** Bridge name */
+  bridge: string;
+  /** Input amount (human-readable) */
+  inputAmount: string;
+  /** Output amount after fees and slippage (human-readable) */
+  outputAmount: string;
+  /** Fee amount in input token (human-readable) */
+  fee: string;
