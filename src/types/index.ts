@@ -426,3 +426,111 @@ export interface ExecutionResult {
   hopTxHashes: string[];
   /** Error message if failed */
   error?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Search Statistics
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Statistics from the minimax search.
+ */
+export interface SearchStats {
+  /** Total nodes explored in the search tree */
+  nodesExplored: number;
+  /** Nodes pruned by alpha-beta */
+  nodesPruned: number;
+  /** Maximum depth reached */
+  maxDepthReached: number;
+  /** Time spent searching in milliseconds */
+  searchTimeMs: number;
+  /** Number of candidate paths considered */
+  candidateCount: number;
+  /** Number of bridge quotes fetched */
+  quotesFetched: number;
+}
+
+/**
+ * Internal candidate path used during path discovery.
+ */
+export interface CandidatePath {
+  /** Ordered chain hops */
+  chains: Chain[];
+  /** Bridge to use at each hop */
+  bridges: string[];
+  /** Tokens at each point */
+  tokens: Token[];
+  /** Pre-fetched quotes for each hop */
+  quotes: BridgeQuote[];
+  /** Total estimated fee */
+  estimatedFee: number;
+  /** Total estimated time */
+  estimatedTime: number;
+  /** Rough score for pre-filtering */
+  roughScore: number;
+}
+
+/**
+ * Default router configuration values.
+ */
+export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
+  strategy: 'minimax',
+  slippageTolerance: 50,
+  timeout: 30000,
+  maxHops: 3,
+  bridges: [],
+  excludeBridges: [],
+  weights: {
+    fees: 0.3,
+    slippage: 0.25,
+    speed: 0.15,
+    reliability: 0.2,
+    mevExposure: 0.1,
+  },
+  adversarialModel: {
+    slippageMultiplier: 1.5,
+    gasMultiplier: 1.3,
+    bridgeDelayMultiplier: 1.4,
+    mevExtraction: 0.005,
+    priceMovement: 0.01,
+    failureProbability: 0.02,
+  },
+  chains: {},
+  minLiquidity: 1000,
+  logLevel: LogLevel.Info,
+  quoteValidityMs: 60000,
+};
+
+/**
+ * Strategy-specific weight presets.
+ */
+export const STRATEGY_WEIGHTS: Record<Strategy, ScoringWeights> = {
+  minimax: {
+    fees: 0.3,
+    slippage: 0.25,
+    speed: 0.15,
+    reliability: 0.2,
+    mevExposure: 0.1,
+  },
+  cheapest: {
+    fees: 0.6,
+    slippage: 0.15,
+    speed: 0.05,
+    reliability: 0.15,
+    mevExposure: 0.05,
+  },
+  fastest: {
+    fees: 0.1,
+    slippage: 0.1,
+    speed: 0.55,
+    reliability: 0.15,
+    mevExposure: 0.1,
+  },
+  safest: {
+    fees: 0.1,
+    slippage: 0.15,
+    speed: 0.05,
+    reliability: 0.5,
+    mevExposure: 0.2,
+  },
+};
