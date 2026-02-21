@@ -85,3 +85,135 @@ export class WormholeAdapter extends AbstractBridgeAdapter {
   /**
    * Calculate the estimated bridge time.
    */
+  private getEstimatedTime(fromChain: Chain, toChain: Chain): number {
+    const fromType = this.getChainType(fromChain);
+    const toType = this.getChainType(toChain);
+    const key = `${fromType}-${toType}`;
+    const baseTime = WORMHOLE_TIMES[key] ?? 900;
+    // Wormhole needs 13/19 guardian signatures, which adds latency
+    const guardianLatency = 60 + Math.floor(Math.random() * 120);
+    return baseTime + guardianLatency;
+  }
+
+  /**
+   * Compute the relay fee based on destination chain.
+   */
+  private computeRelayFee(toChain: Chain, inputAmount: number): number {
+    let relayFee = this.relayerBaseFeeUsd;
+    // Higher relay fees for L1 destinations due to gas
+    if (toChain === 'ethereum') {
+      relayFee += 5.0;
+    } else if (toChain === 'solana') {
+      relayFee += 0.1;
+    } else {
+      // L2s
+      relayFee += 0.5;
+    }
+    // Scale relay fee slightly with amount
+    relayFee += inputAmount * 0.0001;
+    return relayFee;
+  }
+
+  /**
+   * Compute the total fee for a Wormhole transfer.
+   */
+  private computeTotalFee(
+    fromChain: Chain,
+    toChain: Chain,
+    inputAmount: number
+  ): { fee: number; slippageBps: number } {
+    const protocolFeeBps = this.getFeeTierBps(fromChain, toChain);
+    const protocolFee = inputAmount * (protocolFeeBps / 10000);
+    const relayFee = this.computeRelayFee(toChain, inputAmount);
+    const guardianFee = this.guardianFeeUsd;
+    const totalFee = protocolFee + relayFee + guardianFee;
+    // Slippage depends on amount relative to typical liquidity
+    const slippageBps = Math.min(
+      Math.floor((inputAmount / 5000000) * 10) + 1,
+      50
+    );
+    return { fee: totalFee, slippageBps };
+  }
+
+  async getQuote(params: QuoteParams): Promise<BridgeQuote> {
+    if (!this.supportsRoute(params.fromChain, params.toChain)) {
+      throw new Error(
+        `Wormhole does not support ${params.fromChain} -> ${params.toChain}`
+      );
+    }
+
+    const inputAmount = parseFloat(params.amount);
+    if (isNaN(inputAmount) || inputAmount <= 0) {
+      throw new Error('Invalid input amount');
+    }
+
+    const { fee, slippageBps } = this.computeTotalFee(
+      params.fromChain,
+      params.toChain,
+      inputAmount
+    );
+
+    const afterFee = inputAmount - fee;
+    const outputAmount = this.applySlippage(afterFee, slippageBps);
+    const estimatedTime = this.getEstimatedTime(params.fromChain, params.toChain);
+    const liquidityDepth = this.estimateLiquidity(
+      params.fromChain,
+      params.toChain,
+      10000000
+    );
+
+    return {
+      bridge: this.name,
+      inputAmount: inputAmount.toFixed(6),
+      outputAmount: Math.max(0, outputAmount).toFixed(6),
+      fee: fee.toFixed(6),
+      estimatedTime,
+      liquidityDepth,
+      expiresAt: Date.now() + 60000,
+      slippageBps,
+      metadata: {
+        wormholeFromChainId: this.getWormholeChainId(params.fromChain),
+        wormholeToChainId: this.getWormholeChainId(params.toChain),
+        guardianSignaturesRequired: 13,
+        relayerFee: this.computeRelayFee(params.toChain, inputAmount),
+      },
+    };
+  }
+
+  async execute(quote: BridgeQuote, _signer: Signer): Promise<string> {
+    // Validate quote hasn't expired
+    if (Date.now() > quote.expiresAt) {
+      throw new Error('Wormhole quote has expired');
+    }
+    // Simulate transaction execution
+    // In production, this would:
+    // 1. Approve token spending
+    // 2. Call the Wormhole Token Bridge contract
+    // 3. Wait for guardian attestation (VAA)
+    // 4. Submit VAA to destination chain
+    return this.generateTxHash();
+  }
+
+  async getStatus(txHash: string): Promise<BridgeStatus> {
+    // Simulate checking VAA status via Wormhole API
+    // In production: GET https://api.wormholescan.io/api/v1/vaas/{chain}/{emitter}/{seq}
+    const hashNum = parseInt(txHash.slice(2, 10), 16);
+    const progress = (Date.now() % 10000) / 10000;
+    if (progress < 0.2) return 'pending';
+    if (progress < 0.5) return 'confirming';
+    if (hashNum % 100 < 97) return 'completed';
+    return 'failed';
+  }
+
+  async getHealth(): Promise<BridgeHealth> {
+    // Wormhole has high reliability due to guardian network
+    return {
+      online: true,
+      congestion: Math.random() * 0.15,
+      recentSuccessRate: 0.97 + Math.random() * 0.03,
+      medianConfirmTime: 840 + Math.floor(Math.random() * 120),
+      lastChecked: Date.now(),
+      pendingTxCount: Math.floor(Math.random() * 30),
+    };
+  }
+}
