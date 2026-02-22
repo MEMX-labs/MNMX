@@ -298,3 +298,166 @@ export async function buildCandidatePaths(
       const bridgeAdapters = getBridgesForPair(from, to, registry, options.excludeBridges);
       if (bridgeAdapters.length === 0) {
         viable = false;
+        break;
+      }
+      adaptersPerHop.push(bridgeAdapters);
+    }
+
+    if (!viable) continue;
+
+    // Limit combinations to avoid exponential blowup
+    const limited = limitCombinations(adaptersPerHop);
+    const combinations = cartesianProduct(limited);
+
+    for (const combo of combinations) {
+      const bridgeNames = combo.map((a) => a.name);
+      const tokens: Token[] = [fromToken];
+      const quotes: BridgeQuote[] = [];
+      let currentAmount = amount;
+      let totalFee = 0;
+      let totalTime = 0;
+      let quotesFailed = false;
+
+      for (let i = 0; i < combo.length; i++) {
+        const hopFromToken = i === 0
+          ? fromToken
+          : selectIntermediateToken(chainPath[i], fromToken.symbol);
+        const hopToToken = i === combo.length - 1
+          ? toToken
+          : selectIntermediateToken(chainPath[i + 1], fromToken.symbol);
+
+        try {
+          const quote = await combo[i].getQuote({
+            fromChain: chainPath[i],
+            toChain: chainPath[i + 1],
+            fromToken: hopFromToken,
+            toToken: hopToToken,
+            amount: currentAmount,
+            slippageTolerance: 50,
+          });
+
+          // Check minimum liquidity
+          if (quote.liquidityDepth < options.minLiquidity) {
+            quotesFailed = true;
+            break;
+          }
+
+          quotes.push(quote);
+          tokens.push(hopToToken);
+          totalFee += parseFloat(quote.fee);
+          totalTime += quote.estimatedTime;
+          currentAmount = quote.outputAmount;
+        } catch {
+          quotesFailed = true;
+          break;
+        }
+      }
+
+      if (quotesFailed) continue;
+
+      const outputAmount = parseFloat(currentAmount);
+      const inputAmount = parseFloat(amount);
+      const roughScore = inputAmount > 0 ? outputAmount / inputAmount : 0;
+
+      candidates.push({
+        chains: chainPath,
+        bridges: bridgeNames,
+        tokens,
+        quotes,
+        estimatedFee: totalFee,
+        estimatedTime: totalTime,
+        roughScore,
+      });
+    }
+  }
+
+  // Sort by rough score descending
+  candidates.sort((a, b) => b.roughScore - a.roughScore);
+
+  return candidates;
+}
+
+/**
+ * PathDiscovery class - wraps the functional API for convenience.
+ */
+export class PathDiscovery {
+  private registry: BridgeRegistry;
+  private defaultOptions: PathDiscoveryOptions;
+
+  constructor(registry: BridgeRegistry, options?: Partial<PathDiscoveryOptions>) {
+    this.registry = registry;
+    this.defaultOptions = {
+      maxHops: options?.maxHops ?? 3,
+      excludeBridges: options?.excludeBridges ?? [],
+      excludeChains: options?.excludeChains ?? [],
+      minLiquidity: options?.minLiquidity ?? 1000,
+    };
+  }
+
+  /**
+   * Discover all candidate paths for a request.
+   */
+  async discoverPaths(
+    fromChain: Chain,
+    toChain: Chain,
+    fromToken: Token,
+    toToken: Token,
+    amount: string,
+    options?: Partial<PathDiscoveryOptions>,
+  ): Promise<CandidatePath[]> {
+    const opts: PathDiscoveryOptions = { ...this.defaultOptions, ...options };
+
+    // Step 1: Discover chain-level paths
+    const chainPaths = discoverChainPaths(fromChain, toChain, this.registry, opts);
+
+    if (chainPaths.length === 0) return [];
+
+    // Step 2: Filter dominated paths
+    const filtered = filterDominatedPaths(chainPaths);
+
+    // Step 3: Build fully-quoted candidates
+    const candidates = await buildCandidatePaths(
+      filtered,
+      fromToken,
+      toToken,
+      amount,
+      this.registry,
+      opts,
+    );
+
+    return candidates;
+  }
+
+  /**
+   * Find only direct (single-hop) paths.
+   */
+  async expandDirectPaths(
+    fromChain: Chain,
+    toChain: Chain,
+    fromToken: Token,
+    toToken: Token,
+    amount: string,
+  ): Promise<CandidatePath[]> {
+    return this.discoverPaths(fromChain, toChain, fromToken, toToken, amount, {
+      maxHops: 1,
+    });
+  }
+
+  /**
+   * Find multi-hop paths (2+ hops).
+   */
+  async expandMultiHopPaths(
+    fromChain: Chain,
+    toChain: Chain,
+    fromToken: Token,
+    toToken: Token,
+    amount: string,
+    maxHops: number = 3,
+  ): Promise<CandidatePath[]> {
+    const all = await this.discoverPaths(
+      fromChain, toChain, fromToken, toToken, amount,
+      { maxHops },
+    );
+    return all.filter((c) => c.chains.length > 2);
+  }
+}
