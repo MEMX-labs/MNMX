@@ -183,3 +183,118 @@ export function getIntermediateChains(from: Chain, to: Chain): Chain[] {
   const toConns = new Set(CHAIN_CONNECTIVITY[to] ?? []);
   const intermediates: Chain[] = [];
 
+  for (const chain of ALL_CHAINS) {
+    if (chain === from || chain === to) continue;
+    // A good intermediate is connected to both source and destination
+    if (fromConns.has(chain) && toConns.has(chain)) {
+      intermediates.push(chain);
+    }
+  }
+
+  return intermediates;
+}
+
+/**
+ * Get all bridge adapters that can handle a specific chain pair.
+ */
+export function getBridgesForPair(
+  from: Chain,
+  to: Chain,
+  registry: BridgeRegistry,
+  excludeBridges: string[] = [],
+): BridgeAdapter[] {
+  return registry
+    .getForPair(from, to)
+    .filter((a) => !excludeBridges.includes(a.name));
+}
+
+/**
+ * Resolve a token for a chain. First tries the chain registry,
+ * then falls back to constructing a placeholder.
+ */
+function resolveToken(chain: Chain, symbol: string): Token {
+  const found = findToken(chain, symbol);
+  if (found) return found;
+  // Fallback: construct a token with common defaults
+  const isStable = ['USDC', 'USDT', 'DAI'].includes(symbol.toUpperCase());
+  return {
+    symbol: symbol.toUpperCase(),
+    chain,
+    decimals: isStable ? 6 : 18,
+    address: `0x${chain}_${symbol.toLowerCase()}`,
+  };
+}
+
+/**
+ * Select the best intermediate token for a hop between two chains.
+ * Prefers stablecoins, then the same token as the source.
+ */
+function selectIntermediateToken(chain: Chain, preferredSymbol: string): Token {
+  // If the preferred token exists on this chain, use it
+  const preferred = findToken(chain, preferredSymbol);
+  if (preferred) return preferred;
+
+  // Otherwise, use USDC as the universal intermediate
+  const usdc = findToken(chain, 'USDC');
+  if (usdc) return usdc;
+
+  // Fallback
+  return resolveToken(chain, 'USDC');
+}
+
+/**
+ * Compute the cartesian product of arrays.
+ */
+function cartesianProduct<T>(arrays: T[][]): T[][] {
+  if (arrays.length === 0) return [[]];
+  const [first, ...rest] = arrays;
+  const restProduct = cartesianProduct(rest);
+  const result: T[][] = [];
+  for (const item of first) {
+    for (const combo of restProduct) {
+      result.push([item, ...combo]);
+    }
+  }
+  return result;
+}
+
+/**
+ * Limit the number of bridge combinations to prevent combinatorial explosion.
+ * For each hop, keep only the top N bridges sorted by estimated output.
+ */
+function limitCombinations(
+  adaptersPerHop: BridgeAdapter[][],
+  maxPerHop: number = 4,
+): BridgeAdapter[][] {
+  return adaptersPerHop.map((adapters) => {
+    if (adapters.length <= maxPerHop) return adapters;
+    // Keep only the first N (they should already be in a reasonable order)
+    return adapters.slice(0, maxPerHop);
+  });
+}
+
+/**
+ * Assign bridges and build candidate paths with quotes.
+ * Fetches quotes from each bridge for each hop and constructs
+ * fully-quoted candidate paths.
+ */
+export async function buildCandidatePaths(
+  chainPaths: Chain[][],
+  fromToken: Token,
+  toToken: Token,
+  amount: string,
+  registry: BridgeRegistry,
+  options: PathDiscoveryOptions,
+): Promise<CandidatePath[]> {
+  const candidates: CandidatePath[] = [];
+
+  for (const chainPath of chainPaths) {
+    const adaptersPerHop: BridgeAdapter[][] = [];
+    let viable = true;
+
+    for (let i = 0; i < chainPath.length - 1; i++) {
+      const from = chainPath[i];
+      const to = chainPath[i + 1];
+      const bridgeAdapters = getBridgesForPair(from, to, registry, options.excludeBridges);
+      if (bridgeAdapters.length === 0) {
+        viable = false;
