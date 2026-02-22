@@ -92,3 +92,97 @@ export function computeScore(
     speedScore * weights.speed +
     reliabilityScore * weights.reliability +
     mevScore * weights.mevExposure
+  );
+}
+
+/**
+ * Get weights for a given strategy.
+ */
+export function getWeightsForStrategy(strategy: Strategy): ScoringWeights {
+  return STRATEGY_WEIGHTS[strategy];
+}
+
+/**
+ * Verify that weights sum to 1.0 (within tolerance).
+ */
+export function weightsAreValid(weights: ScoringWeights): boolean {
+  const sum =
+    weights.fees +
+    weights.slippage +
+    weights.speed +
+    weights.reliability +
+    weights.mevExposure;
+  return Math.abs(sum - 1.0) < 1e-6;
+}
+
+/**
+ * Normalize weights so they sum to 1.0.
+ */
+export function normalizeWeights(weights: ScoringWeights): ScoringWeights {
+  const sum =
+    weights.fees +
+    weights.slippage +
+    weights.speed +
+    weights.reliability +
+    weights.mevExposure;
+  if (sum === 0) return getWeightsForStrategy('minimax');
+  return {
+    fees: weights.fees / sum,
+    slippage: weights.slippage / sum,
+    speed: weights.speed / sum,
+    reliability: weights.reliability / sum,
+    mevExposure: weights.mevExposure / sum,
+  };
+}
+
+/**
+ * Compare two routes by their minimax scores (descending).
+ * Returns negative if a should come first, positive if b should come first.
+ */
+export function compareRoutes(a: Route, b: Route): number {
+  return b.minimaxScore - a.minimaxScore;
+}
+
+/**
+ * Estimate MEV exposure for a single hop.
+ * MEV risk depends on chain mempool visibility, amount, and time in-flight.
+ */
+export function estimateHopMevExposure(hop: RouteHop): number {
+  const amount = parseFloat(hop.inputAmount);
+  const timeFraction = hop.estimatedTime / 3600;
+  const chainFactor = getChainMevFactor(hop.fromChain);
+  return amount * timeFraction * chainFactor * 0.001;
+}
+
+/**
+ * MEV risk factor by chain. Higher = more MEV risk.
+ */
+function getChainMevFactor(chain: string): number {
+  const factors: Record<string, number> = {
+    ethereum: 1.0,
+    arbitrum: 0.4,
+    base: 0.3,
+    optimism: 0.35,
+    polygon: 0.5,
+    bnb: 0.45,
+    avalanche: 0.3,
+    solana: 0.6,
+  };
+  return factors[chain] ?? 0.5;
+}
+
+/**
+ * Estimate reliability from liquidity depth relative to transfer amount.
+ */
+export function estimateReliabilityFromLiquidity(
+  liquidityDepth: number,
+  amount: number,
+): number {
+  if (amount <= 0) return 0.95;
+  const ratio = liquidityDepth / Math.max(amount, 1);
+  const base = 0.80;
+  const ceiling = 0.995;
+  return Math.min(ceiling, base + (ceiling - base) * (1 - 1 / (1 + ratio * 0.5)));
+}
+
+/**
