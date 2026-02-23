@@ -186,3 +186,129 @@ export function estimateReliabilityFromLiquidity(
 }
 
 /**
+ * Score a complete Route object using all dimensions.
+ */
+export function scoreRoute(route: Route, weights: ScoringWeights): number {
+  if (route.path.length === 0) return 0;
+
+  const totalInput = parseFloat(route.path[0].inputAmount);
+  const totalFees = parseFloat(route.totalFees);
+
+  const feeScore = normalizeFee(totalFees, totalInput);
+
+  const totalSlippage = route.path.reduce((s, h) => s + h.slippageBps, 0);
+  const slippageScore = normalizeSlippage(totalSlippage);
+
+  const speedScore = normalizeSpeed(route.estimatedTime);
+
+  const perHopReliability = route.path.map((h) =>
+    estimateReliabilityFromLiquidity(h.liquidityDepth, parseFloat(h.inputAmount))
+  );
+  const reliabilityScore = normalizeReliability(perHopReliability);
+
+  let totalMev = 0;
+  for (const hop of route.path) {
+    totalMev += estimateHopMevExposure(hop);
+  }
+  const mevScore = normalizeMevExposure(totalMev, totalInput);
+
+  return computeScore(feeScore, slippageScore, speedScore, reliabilityScore, mevScore, weights);
+}
+
+/**
+ * Score and rank a list of candidate paths.
+ */
+export function rankCandidates(
+  candidates: CandidatePath[],
+  inputAmount: number,
+  weights: ScoringWeights,
+): CandidatePath[] {
+  const scored = candidates.map((c) => {
+    const feeScore = normalizeFee(c.estimatedFee, inputAmount);
+    const speedScore = normalizeSpeed(c.estimatedTime);
+    const avgSlippage =
+      c.quotes.length > 0
+        ? c.quotes.reduce((s, q) => s + q.slippageBps, 0) / c.quotes.length
+        : 0;
+    const slippageScore = normalizeSlippage(avgSlippage);
+
+    // Reliability decreases with more hops
+    const reliabilityScore = Math.max(0, 1 - c.chains.length * 0.02);
+
+    // MEV estimate based on total time and chain exposure
+    const totalTime = c.estimatedTime;
+    const mevFraction = (totalTime / 3600) * 0.001;
+    const mevAmount = inputAmount * mevFraction;
+    const mevScore = normalizeMevExposure(mevAmount, inputAmount);
+
+    const score = computeScore(
+      feeScore,
+      slippageScore,
+      speedScore,
+      reliabilityScore,
+      mevScore,
+      weights,
+    );
+
+    return { ...c, roughScore: score };
+  });
+
+  scored.sort((a, b) => b.roughScore - a.roughScore);
+  return scored;
+}
+
+/**
+ * Detailed score breakdown for a route.
+ */
+export interface ScoreBreakdown {
+  overall: number;
+  fees: number;
+  slippage: number;
+  speed: number;
+  reliability: number;
+  mevExposure: number;
+  weights: ScoringWeights;
+}
+
+/**
+ * Get a detailed score breakdown for a route.
+ */
+export function getScoreBreakdown(
+  route: Route,
+  weights: ScoringWeights,
+): ScoreBreakdown {
+  if (route.path.length === 0) {
+    return {
+      overall: 0,
+      fees: 0,
+      slippage: 0,
+      speed: 0,
+      reliability: 0,
+      mevExposure: 0,
+      weights,
+    };
+  }
+
+  const totalInput = parseFloat(route.path[0].inputAmount);
+  const totalFees = parseFloat(route.totalFees);
+
+  const fees = normalizeFee(totalFees, totalInput);
+  const totalSlippage = route.path.reduce((s, h) => s + h.slippageBps, 0);
+  const slippage = normalizeSlippage(totalSlippage);
+  const speed = normalizeSpeed(route.estimatedTime);
+
+  const perHopReliability = route.path.map((h) =>
+    estimateReliabilityFromLiquidity(h.liquidityDepth, parseFloat(h.inputAmount))
+  );
+  const reliability = normalizeReliability(perHopReliability);
+
+  let totalMev = 0;
+  for (const hop of route.path) {
+    totalMev += estimateHopMevExposure(hop);
+  }
+  const mevExposure = normalizeMevExposure(totalMev, totalInput);
+
+  const overall = computeScore(fees, slippage, speed, reliability, mevExposure, weights);
+
+  return { overall, fees, slippage, speed, reliability, mevExposure, weights };
+}
