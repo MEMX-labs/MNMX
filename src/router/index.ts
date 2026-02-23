@@ -214,3 +214,112 @@ export class MnmxRouter {
 
     if (candidates.length === 0) {
       logger.warn('No viable candidate paths with quotes');
+      return { bestRoute: null, alternatives: [], stats: EMPTY_STATS, requestId };
+    }
+
+    logger.debug('Built ' + candidates.length + ' candidate paths with quotes');
+
+    // Step 4: Apply strategy
+    const result = this._applyStrategy(
+      strategy, candidates, parseFloat(request.from.amount), request,
+    );
+
+    if (result.bestRoute) {
+      logger.info(
+        'Route found [' + requestId + ']: score=' +
+        result.bestRoute.minimaxScore.toFixed(4) +
+        ', alternatives=' + (result.allRoutes.length - 1) +
+        ', explored=' + result.stats.nodesExplored +
+        ', pruned=' + result.stats.nodesPruned
+      );
+    }
+
+    return {
+      bestRoute: result.bestRoute,
+      alternatives: result.allRoutes.slice(1),
+      stats: result.stats,
+      requestId,
+    };
+  }
+
+  /**
+   * Find all routes sorted by score.
+   */
+  async findAllRoutes(request: RouteRequest): Promise<Route[]> {
+    const result = await this.findRoute(request);
+    const allRoutes: Route[] = [];
+    if (result.bestRoute) allRoutes.push(result.bestRoute);
+    allRoutes.push(...result.alternatives);
+    return allRoutes;
+  }
+
+  /**
+   * Execute a route by sending transactions through each bridge hop.
+   */
+  async execute(route: Route, opts: ExecOpts): Promise<ExecutionResult> {
+    logger.info('Executing route ' + route.routeId + ' (' + route.path.length + ' hops)');
+
+    const startTime = Date.now();
+    const hopTxHashes: string[] = [];
+    let currentStatus: BridgeStatus = 'pending';
+    let lastError: string | undefined;
+
+    // Validate route expiry
+    if (Date.now() > route.expiresAt) {
+      return {
+        txHash: '',
+        route,
+        actualOutput: '0',
+        executionTime: Date.now() - startTime,
+        status: 'failed',
+        hopTxHashes: [],
+        error: 'Route has expired',
+      };
+    }
+
+    // Dry run
+    if (opts.dryRun) {
+      logger.info('Dry run mode - simulating execution');
+      for (let i = 0; i < route.path.length; i++) {
+        const hop = route.path[i];
+        this._emitProgress(opts, i, route.path.length, 'completed', undefined,
+          '[DRY RUN] Hop ' + (i + 1) + ': ' + hop.fromChain + ' -> ' + hop.toChain + ' via ' + hop.bridge);
+        hopTxHashes.push('0x' + '0'.repeat(64));
+      }
+      return {
+        txHash: hopTxHashes[0] ?? '',
+        route,
+        actualOutput: route.expectedOutput,
+        executionTime: Date.now() - startTime,
+        status: 'completed',
+        hopTxHashes,
+      };
+    }
+
+    // Execute hops sequentially
+    for (let i = 0; i < route.path.length; i++) {
+      const hop = route.path[i];
+      const bridge = this.registry.get(hop.bridge);
+
+      if (!bridge) {
+        lastError = 'Bridge not found: ' + hop.bridge;
+        currentStatus = 'failed';
+        this._emitProgress(opts, i, route.path.length, 'failed', undefined, lastError);
+        break;
+      }
+
+      this._emitProgress(opts, i, route.path.length, 'pending', undefined,
+        'Initiating hop ' + (i + 1) + ': ' + hop.fromChain + ' -> ' + hop.toChain + ' via ' + hop.bridge);
+
+      try {
+        // Fresh quote
+        const freshQuote = await bridge.getQuote({
+          fromChain: hop.fromChain,
+          toChain: hop.toChain,
+          fromToken: hop.fromToken,
+          toToken: hop.toToken,
+          amount: hop.inputAmount,
+          slippageTolerance: this.config.slippageTolerance,
+        });
+
+        // Execute
