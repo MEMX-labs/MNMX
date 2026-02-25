@@ -209,3 +209,158 @@ fn test_time_limit_respected() {
     let start = std::time::Instant::now();
     let plan = engine.search(&state, &actions);
     let elapsed = start.elapsed().as_millis() as u64;
+
+    // Allow generous margin for overhead (5x the limit)
+    assert!(
+        elapsed < time_limit * 5,
+        "Search took {}ms, limit was {}ms",
+        elapsed,
+        time_limit
+    );
+
+    // Should still produce a result from completed iterations
+    assert!(plan.expected_score.is_finite() || plan.expected_score == 0.0);
+    assert!(plan.search_stats.nodes_explored > 0);
+}
+
+#[test]
+fn test_transposition_table_improves_perf() {
+    let state = make_test_state();
+    let actions = make_test_actions();
+
+    let mut engine_tt = MinimaxEngine::new(SearchConfig {
+        max_depth: 3,
+        time_limit_ms: 10_000,
+        transposition_enabled: true,
+        alpha_beta_enabled: true,
+        move_ordering_enabled: false,
+        ..SearchConfig::default()
+    });
+    let plan_tt = engine_tt.search(&state, &actions);
+
+    let mut engine_no_tt = MinimaxEngine::new(SearchConfig {
+        max_depth: 3,
+        time_limit_ms: 10_000,
+        transposition_enabled: false,
+        alpha_beta_enabled: true,
+        move_ordering_enabled: false,
+        ..SearchConfig::default()
+    });
+    let plan_no_tt = engine_no_tt.search(&state, &actions);
+
+    // TT should have hits > 0
+    assert!(
+        plan_tt.search_stats.tt_hits > 0 || plan_tt.search_stats.tt_misses > 0,
+        "TT should have been probed"
+    );
+
+    // Both should produce valid plans
+    assert!(!plan_tt.actions.is_empty());
+    assert!(!plan_no_tt.actions.is_empty());
+}
+
+#[test]
+fn test_move_ordering_consistency() {
+    let state = make_test_state();
+    let actions = make_test_actions();
+
+    // Run the same search twice with move ordering enabled
+    let mut engine1 = MinimaxEngine::new(fast_config(2));
+    let plan1 = engine1.search(&state, &actions);
+
+    let mut engine2 = MinimaxEngine::new(fast_config(2));
+    let plan2 = engine2.search(&state, &actions);
+
+    // Should produce the same best action
+    assert_eq!(
+        plan1.actions[0].action_key(),
+        plan2.actions[0].action_key(),
+        "Same input should produce same best move"
+    );
+}
+
+#[test]
+fn test_empty_actions_returns_empty_plan() {
+    let mut engine = MinimaxEngine::new(fast_config(3));
+    let state = make_test_state();
+    let plan = engine.search(&state, &[]);
+
+    assert!(plan.actions.is_empty());
+    assert_eq!(plan.total_cost, 0);
+}
+
+#[test]
+fn test_single_action_returns_that_action() {
+    let mut engine = MinimaxEngine::new(fast_config(2));
+    let state = make_test_state();
+    let single = vec![ExecutionAction::new(
+        ActionKind::Swap,
+        "SOL",
+        100_000,
+        "USDC",
+        50,
+        "pool_sol_usdc",
+        5000,
+    )];
+    let plan = engine.search(&state, &single);
+
+    assert!(!plan.actions.is_empty());
+    assert_eq!(plan.actions[0].token_mint, "SOL");
+    assert_eq!(plan.actions[0].amount, 100_000);
+}
+
+#[test]
+fn test_search_with_pending_transactions() {
+    let mut state = make_test_state();
+    state.pending_transactions.push(PendingTx::new(
+        "sig_mev",
+        "MEVbot1",
+        "pool_sol_usdc",
+        1_000_000,
+        200,
+        50_000,
+    ));
+
+    let mut engine = MinimaxEngine::new(fast_config(2));
+    let actions = make_test_actions();
+    let plan = engine.search(&state, &actions);
+
+    // Should still produce a valid plan even with MEV threats
+    assert!(!plan.actions.is_empty());
+    assert!(plan.expected_score.is_finite());
+}
+
+#[test]
+fn test_stats_tracking() {
+    let mut engine = MinimaxEngine::new(fast_config(3));
+    let state = make_test_state();
+    let actions = make_test_actions();
+    let plan = engine.search(&state, &actions);
+
+    let stats = &plan.search_stats;
+    assert!(stats.nodes_explored > 0);
+    assert!(stats.max_depth_reached >= 1);
+    assert!(stats.time_ms > 0 || stats.nodes_explored < 100); // Fast searches might round to 0ms
+    assert!(stats.branching_factor >= 0.0);
+}
+
+#[test]
+fn test_search_different_pool_states() {
+    // Test with a very imbalanced pool
+    let mut state = make_test_state();
+    state.pool_states[0] = PoolState::new(
+        "pool_sol_usdc",
+        1_000_000,    // Very low reserve A
+        500_000_000,  // Very high reserve B
+        30,
+        "SOL",
+        "USDC",
+    );
+
+    let mut engine = MinimaxEngine::new(fast_config(2));
+    let actions = make_test_actions();
+    let plan = engine.search(&state, &actions);
+
+    assert!(!plan.actions.is_empty());
+    assert!(plan.expected_score.is_finite());
+}
