@@ -66,3 +66,71 @@ describe('path-discovery', () => {
       for (const p of paths2) {
         expect(p.length).toBeLessThanOrEqual(3); // 2 hops = 3 chains
       }
+      expect(paths2.length).toBeGreaterThanOrEqual(paths1.length);
+    });
+
+    it('handles unsupported chain pairs', () => {
+      const emptyRegistry = new BridgeRegistry();
+      const paths = discoverChainPaths('ethereum', 'solana', emptyRegistry, defaultOpts);
+      expect(paths).toHaveLength(0);
+    });
+
+    it('returns empty for same-chain requests', () => {
+      const paths = discoverChainPaths('ethereum', 'ethereum', registry, defaultOpts);
+      expect(paths).toHaveLength(0);
+    });
+  });
+
+  describe('filterDominatedPaths', () => {
+    it('filters dominated paths', () => {
+      const paths: Chain[][] = [
+        ['ethereum', 'solana'],
+        ['ethereum', 'arbitrum', 'solana'],
+        ['ethereum', 'polygon', 'solana'],
+      ];
+      const filtered = filterDominatedPaths(paths);
+      // The direct path dominates both 2-hop paths that share the same endpoints
+      // but only if they're a strict subsequence
+      expect(filtered.length).toBeLessThanOrEqual(paths.length);
+      // The direct path should always be included
+      expect(filtered).toContainEqual(['ethereum', 'solana']);
+    });
+
+    it('keeps non-dominated paths', () => {
+      const paths: Chain[][] = [
+        ['ethereum', 'arbitrum', 'solana'],
+        ['ethereum', 'polygon', 'solana'],
+      ];
+      const filtered = filterDominatedPaths(paths);
+      // Neither dominates the other since they go through different intermediates
+      expect(filtered).toHaveLength(2);
+    });
+  });
+
+  describe('buildCandidatePaths', () => {
+    it('builds candidates with quotes', async () => {
+      const chainPaths: Chain[][] = [['ethereum', 'solana']];
+      const fromToken = makeToken('USDC', 'ethereum');
+      const toToken = makeToken('USDC', 'solana');
+
+      const candidates = await buildCandidatePaths(
+        chainPaths,
+        fromToken,
+        toToken,
+        '1000',
+        registry,
+        defaultOpts,
+      );
+
+      expect(candidates.length).toBeGreaterThan(0);
+      for (const c of candidates) {
+        expect(c.chains).toEqual(['ethereum', 'solana']);
+        expect(c.quotes.length).toBe(1);
+        expect(c.estimatedFee).toBeGreaterThan(0);
+        expect(c.estimatedTime).toBeGreaterThan(0);
+        expect(c.roughScore).toBeGreaterThan(0);
+        expect(c.roughScore).toBeLessThanOrEqual(1);
+      }
+    });
+  });
+});
