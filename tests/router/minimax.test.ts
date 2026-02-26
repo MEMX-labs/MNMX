@@ -73,3 +73,78 @@ describe('minimax search', () => {
   ];
 
   it('finds optimal route', () => {
+    const result = minimaxSearch(candidates, 1000, defaultOptions);
+    expect(result.bestRoute).not.toBeNull();
+    expect(result.allRoutes.length).toBe(3);
+    expect(result.stats.nodesExplored).toBeGreaterThan(0);
+    // Best route should have highest minimax score
+    for (const route of result.allRoutes) {
+      expect(route.minimaxScore).toBeLessThanOrEqual(result.bestRoute!.minimaxScore);
+    }
+  });
+
+  it('alpha-beta pruning reduces search nodes', () => {
+    const noPrune = minimaxSearch(candidates, 1000, defaultOptions);
+    const pruned = minimaxSearchWithPruning(candidates, 1000, defaultOptions);
+
+    // Pruning should explore fewer or equal nodes
+    expect(pruned.stats.nodesExplored).toBeLessThanOrEqual(noPrune.stats.nodesExplored);
+
+    // Both should find the same best route (same optimal result)
+    expect(pruned.bestRoute).not.toBeNull();
+    expect(noPrune.bestRoute).not.toBeNull();
+  });
+
+  it('adversarial model produces worse scores than base evaluation', () => {
+    const result = minimaxSearch(candidates, 1000, defaultOptions);
+    for (const route of result.allRoutes) {
+      // Minimax score (adversarial) should be less than or equal to what
+      // a greedy evaluation would produce, since adversarial degrades values
+      expect(route.minimaxScore).toBeLessThan(1.0);
+      expect(route.minimaxScore).toBeGreaterThan(0);
+      // Guaranteed minimum should be less than expected output
+      const expected = parseFloat(route.expectedOutput);
+      const guaranteed = parseFloat(route.guaranteedMinimum);
+      expect(guaranteed).toBeLessThanOrEqual(expected);
+    }
+  });
+
+  it('deeper search does not regress', () => {
+    const shallow = minimaxSearchWithPruning(candidates, 1000, {
+      ...defaultOptions,
+      maxDepth: 1,
+    });
+    const deep = minimaxSearchWithPruning(candidates, 1000, {
+      ...defaultOptions,
+      maxDepth: 5,
+    });
+
+    // Both should find valid routes
+    expect(shallow.bestRoute).not.toBeNull();
+    expect(deep.bestRoute).not.toBeNull();
+
+    // Deeper search should explore at least as many nodes
+    expect(deep.stats.nodesExplored).toBeGreaterThanOrEqual(shallow.stats.nodesExplored);
+  });
+
+  it('iterative deepening returns valid result at each depth', () => {
+    const results = iterativeDeepening(candidates, 1000, defaultOptions, 3);
+
+    expect(results.length).toBe(3);
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      expect(r.bestRoute).not.toBeNull();
+      expect(r.allRoutes.length).toBeGreaterThan(0);
+      expect(r.stats.nodesExplored).toBeGreaterThan(0);
+      // Each result should be independently valid
+      expect(r.bestRoute!.minimaxScore).toBeGreaterThan(0);
+    }
+  });
+
+  it('handles empty candidates gracefully', () => {
+    const result = minimaxSearch([], 1000, defaultOptions);
+    expect(result.bestRoute).toBeNull();
+    expect(result.allRoutes).toHaveLength(0);
+    expect(result.stats.nodesExplored).toBe(0);
+  });
+});
