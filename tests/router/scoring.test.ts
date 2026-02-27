@@ -58,3 +58,63 @@ describe('scoring', () => {
     });
 
     it('clamps negative scores to 0', () => {
+      // Fee > 10% of input should clamp to 0
+      expect(normalizeFee(200, 1000)).toBe(0);
+    });
+  });
+
+  describe('speed normalization', () => {
+    it('maps instant transfer to 1.0', () => {
+      expect(normalizeSpeed(0)).toBe(1);
+    });
+
+    it('maps max time transfer to 0.0', () => {
+      expect(normalizeSpeed(1800)).toBe(0);
+    });
+
+    it('maps intermediate values proportionally', () => {
+      const score = normalizeSpeed(900);
+      expect(score).toBeCloseTo(0.5, 2);
+    });
+
+    it('clamps values beyond max time', () => {
+      expect(normalizeSpeed(3600)).toBe(0);
+    });
+  });
+
+  describe('route comparison ordering', () => {
+    it('orders routes by minimax score descending', () => {
+      const routeA = { minimaxScore: 0.85 } as Route;
+      const routeB = { minimaxScore: 0.72 } as Route;
+      expect(compareRoutes(routeA, routeB)).toBeLessThan(0);
+      expect(compareRoutes(routeB, routeA)).toBeGreaterThan(0);
+      expect(compareRoutes(routeA, routeA)).toBe(0);
+    });
+  });
+
+  describe('strategy weight presets', () => {
+    it('cheapest strategy weights fees most heavily', () => {
+      const w = STRATEGY_WEIGHTS.cheapest;
+      expect(w.fees).toBeGreaterThan(w.slippage);
+      expect(w.fees).toBeGreaterThan(w.speed);
+      expect(w.fees).toBeGreaterThan(w.reliability);
+      expect(w.fees).toBeGreaterThan(w.mevExposure);
+    });
+
+    it('fastest strategy weights speed most heavily', () => {
+      const w = STRATEGY_WEIGHTS.fastest;
+      expect(w.speed).toBeGreaterThan(w.fees);
+      expect(w.speed).toBeGreaterThan(w.slippage);
+      expect(w.speed).toBeGreaterThan(w.reliability);
+      expect(w.speed).toBeGreaterThan(w.mevExposure);
+    });
+
+    it('safest strategy weights reliability most heavily', () => {
+      const w = STRATEGY_WEIGHTS.safest;
+      expect(w.reliability).toBeGreaterThan(w.fees);
+      expect(w.reliability).toBeGreaterThan(w.slippage);
+      expect(w.reliability).toBeGreaterThan(w.speed);
+      expect(w.reliability).toBeGreaterThan(w.mevExposure);
+    });
+  });
+});
