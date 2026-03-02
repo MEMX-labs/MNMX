@@ -139,3 +139,86 @@ describe('GameTreeBuilder', () => {
       priority: 1,
       label: 'transfer',
     };
+
+    const threats = builder.generateAdversaryMoves(state, transfer);
+    expect(threats).toHaveLength(0);
+  });
+
+  it('should simulate a swap correctly', () => {
+    const builder = new GameTreeBuilder(makeConfig(2));
+    const state = makeState();
+    const action = makeSwap(10_000_000n);
+
+    const nextState = builder.simulateAction(state, action);
+
+    // Input token balance should decrease
+    const originalBalance = state.tokenBalances.get(action.tokenMintIn)!;
+    const newBalance = nextState.tokenBalances.get(action.tokenMintIn)!;
+    expect(newBalance).toBeLessThan(originalBalance);
+
+    // Output token balance should increase
+    const originalOut = state.tokenBalances.get(action.tokenMintOut)!;
+    const newOut = nextState.tokenBalances.get(action.tokenMintOut)!;
+    expect(newOut).toBeGreaterThan(originalOut);
+
+    // Pool reserves should shift
+    const originalPool = state.poolStates.get(action.pool)!;
+    const newPool = nextState.poolStates.get(action.pool)!;
+    expect(newPool.reserveA).toBeGreaterThan(originalPool.reserveA);
+    expect(newPool.reserveB).toBeLessThan(originalPool.reserveB);
+  });
+
+  it('should not mutate the original state during simulation', () => {
+    const builder = new GameTreeBuilder(makeConfig(2));
+    const state = makeState();
+    const originalBalanceA = state.tokenBalances.get(TEST_POOL.tokenMintA);
+    const originalReserveA = state.poolStates.get(TEST_POOL.address)!.reserveA;
+
+    builder.simulateAction(state, makeSwap(50_000_000n));
+
+    expect(state.tokenBalances.get(TEST_POOL.tokenMintA)).toBe(originalBalanceA);
+    expect(state.poolStates.get(TEST_POOL.address)!.reserveA).toBe(originalReserveA);
+  });
+
+  it('should simulate MEV response by shifting reserves', () => {
+    const builder = new GameTreeBuilder(makeConfig(2));
+    const state = makeState();
+    const threat = makeThreat();
+
+    const nextState = builder.simulateMevResponse(state, threat);
+    const originalPool = state.poolStates.get(TEST_POOL.address)!;
+    const newPool = nextState.poolStates.get(TEST_POOL.address)!;
+
+    // Sandwich should shift reserves
+    expect(newPool.reserveA).not.toBe(originalPool.reserveA);
+  });
+
+  it('should produce unique state hashes for different states', () => {
+    const builder = new GameTreeBuilder(makeConfig(2));
+    const state1 = makeState();
+    const state2 = makeState();
+    state2.slot = 999;
+
+    const hash1 = builder.hashState(state1);
+    const hash2 = builder.hashState(state2);
+
+    expect(hash1).not.toBe(hash2);
+  });
+
+  it('should produce consistent hashes for identical states', () => {
+    const builder = new GameTreeBuilder(makeConfig(2));
+    const state = makeState();
+
+    const hash1 = builder.hashState(state);
+    const hash2 = builder.hashState(state);
+
+    expect(hash1).toBe(hash2);
+  });
+});
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+function findMaxDepth(node: { depth: number; children: any[] }): number {
+  if (node.children.length === 0) return node.depth;
+  return Math.max(node.depth, ...node.children.map(findMaxDepth));
+}
