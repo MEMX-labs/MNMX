@@ -253,3 +253,113 @@ class LayerZeroBridge(BridgeAdapter):
 
     @property
     def supported_chains(self) -> list[Chain]:
+        return [
+            Chain.ETHEREUM,
+            Chain.POLYGON,
+            Chain.ARBITRUM,
+            Chain.OPTIMISM,
+            Chain.AVALANCHE,
+            Chain.BSC,
+            Chain.BASE,
+            Chain.FANTOM,
+        ]
+
+    def get_quote(
+        self,
+        from_chain: Chain,
+        to_chain: Chain,
+        from_token: str,
+        to_token: str,
+        amount: float,
+    ) -> BridgeQuote:
+        if not self.supports_pair(from_chain, to_chain):
+            raise BridgeError(self.name, "get_quote", f"Pair {from_chain}->{to_chain} not supported")
+        return _compute_quote(_FEE_MODELS["layerzero"], self.name, from_chain, to_chain, from_token, to_token, amount)
+
+    def get_health(self) -> BridgeHealth:
+        m = _FEE_MODELS["layerzero"]
+        return BridgeHealth(
+            online=True,
+            congestion=m.congestion,
+            success_rate=0.996,
+            median_confirm_time=m.speed_seconds,
+        )
+
+
+class AllbridgeBridge(BridgeAdapter):
+    """Allbridge adapter."""
+
+    @property
+    def name(self) -> str:
+        return "allbridge"
+
+    @property
+    def supported_chains(self) -> list[Chain]:
+        return [
+            Chain.ETHEREUM,
+            Chain.POLYGON,
+            Chain.ARBITRUM,
+            Chain.AVALANCHE,
+            Chain.BSC,
+            Chain.SOLANA,
+            Chain.CELO,
+        ]
+
+    def get_quote(
+        self,
+        from_chain: Chain,
+        to_chain: Chain,
+        from_token: str,
+        to_token: str,
+        amount: float,
+    ) -> BridgeQuote:
+        if not self.supports_pair(from_chain, to_chain):
+            raise BridgeError(self.name, "get_quote", f"Pair {from_chain}->{to_chain} not supported")
+        return _compute_quote(_FEE_MODELS["allbridge"], self.name, from_chain, to_chain, from_token, to_token, amount)
+
+    def get_health(self) -> BridgeHealth:
+        m = _FEE_MODELS["allbridge"]
+        return BridgeHealth(
+            online=True,
+            congestion=m.congestion,
+            success_rate=0.978,
+            median_confirm_time=m.speed_seconds,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+class BridgeRegistry:
+    """Central registry for all bridge adapters."""
+
+    def __init__(self) -> None:
+        self._bridges: dict[str, BridgeAdapter] = {}
+
+    def register(self, bridge: BridgeAdapter) -> None:
+        self._bridges[bridge.name] = bridge
+
+    def get(self, name: str) -> BridgeAdapter:
+        if name not in self._bridges:
+            raise BridgeError(name, "lookup", "Bridge not registered")
+        return self._bridges[name]
+
+    def get_all(self) -> list[BridgeAdapter]:
+        return list(self._bridges.values())
+
+    def get_for_pair(self, from_chain: Chain, to_chain: Chain) -> list[BridgeAdapter]:
+        return [b for b in self._bridges.values() if b.supports_pair(from_chain, to_chain)]
+
+    def names(self) -> list[str]:
+        return list(self._bridges.keys())
+
+
+def create_default_registry() -> BridgeRegistry:
+    """Create a registry pre-populated with all built-in bridge adapters."""
+    registry = BridgeRegistry()
+    registry.register(WormholeBridge())
+    registry.register(DeBridgeBridge())
+    registry.register(LayerZeroBridge())
+    registry.register(AllbridgeBridge())
+    return registry
