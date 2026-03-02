@@ -72,3 +72,78 @@ class RouteScorer:
 
     # ---- public API --------------------------------------------------------
 
+    def score_route(self, route: Route, weights: ScoringWeights | None = None) -> float:
+        """Compute a composite score in [0, 1] for *route*.  Higher is better."""
+        w = (weights or self._default_weights).normalized()
+        if not route.path:
+            return 0.0
+
+        initial_amount = route.path[0].input_amount
+        if initial_amount == 0:
+            return 0.0
+
+        fee_score = self.normalize_fee(route.total_fees, initial_amount)
+        slip_score = self.normalize_slippage(
+            safe_divide(initial_amount - route.expected_output - route.total_fees, initial_amount)
+        )
+        speed_score = self.normalize_speed(route.estimated_time)
+        # reliability: average per-hop implied reliability (from fee ratio heuristic)
+        hop_reliabilities = [
+            clamp(1.0 - hop.fee_percentage / 100.0 * 2.0, 0.0, 1.0) for hop in route.path
+        ]
+        avg_reliability = sum(hop_reliabilities) / len(hop_reliabilities)
+        rel_score = self.normalize_reliability(avg_reliability)
+        mev_score = self.normalize_mev(route.total_fees * 0.1, initial_amount)  # heuristic
+
+        return weighted_average(
+            [fee_score, slip_score, speed_score, rel_score, mev_score],
+            [w.fees, w.slippage, w.speed, w.reliability, w.mev_exposure],
+        )
+
+    def score_hop(self, hop: RouteHop, weights: ScoringWeights | None = None) -> float:
+        """Score a single hop in [0, 1]."""
+        w = (weights or self._default_weights).normalized()
+        if hop.input_amount == 0:
+            return 0.0
+
+        fee_score = self.normalize_fee(hop.fee, hop.input_amount)
+        slip_score = self.normalize_slippage(
+            safe_divide(hop.input_amount - hop.output_amount - hop.fee, hop.input_amount)
+        )
+        speed_score = self.normalize_speed(hop.estimated_time)
+        rel_score = self.normalize_reliability(clamp(1.0 - hop.fee_percentage / 100.0 * 2.0, 0.0, 1.0))
+        mev_score = self.normalize_mev(hop.fee * 0.1, hop.input_amount)
+
+        return weighted_average(
+            [fee_score, slip_score, speed_score, rel_score, mev_score],
+            [w.fees, w.slippage, w.speed, w.reliability, w.mev_exposure],
+        )
+
+    # ---- normalization helpers (all return 0-1, higher = better) -----------
+
+    @staticmethod
+    def normalize_fee(fee: float, amount: float) -> float:
+        """Score fees: 1.0 = zero fees, 0.0 = fees >= _MAX_FEE_RATIO of amount."""
+        ratio = safe_divide(fee, amount)
+        return 1.0 - clamp(ratio / _MAX_FEE_RATIO, 0.0, 1.0)
+
+    @staticmethod
+    def normalize_slippage(slippage: float) -> float:
+        """Score slippage: 1.0 = zero slippage, 0.0 = slippage >= _MAX_SLIPPAGE."""
+        return 1.0 - clamp(slippage / _MAX_SLIPPAGE, 0.0, 1.0)
+
+    @staticmethod
+    def normalize_speed(time_seconds: int | float) -> float:
+        """Score speed: 1.0 = instant, 0.0 = >= _MAX_TIME_SECONDS."""
+        return 1.0 - clamp(float(time_seconds) / _MAX_TIME_SECONDS, 0.0, 1.0)
+
+    @staticmethod
+    def normalize_reliability(success_rate: float) -> float:
+        """Score reliability: 1.0 = 100% success, 0.0 = <= _MIN_RELIABILITY."""
+        return normalize_to_range(success_rate, _MIN_RELIABILITY, 1.0)
+
+    @staticmethod
+    def normalize_mev(exposure: float, amount: float) -> float:
+        """Score MEV exposure: 1.0 = no exposure, 0.0 = exposure >= _MAX_MEV_RATIO."""
+        ratio = safe_divide(exposure, amount)
+        return 1.0 - clamp(ratio / _MAX_MEV_RATIO, 0.0, 1.0)
