@@ -135,3 +135,135 @@ class TestMevAwareStrategy:
         )
         bt = Backtester(BacktestConfig(initial_balance={TOKEN_A: 1_000_000}))
         result = bt.run(states, strategy)
+
+        # the strategy should skip many slots due to high MEV risk
+        # but the consecutive skip limit (5) means it eventually trades
+        assert result.num_trades < len(states)
+
+    def test_mev_strategy_trades_when_safe(self) -> None:
+        states = _make_history(10)
+        strategy = MevAwareStrategy(
+            token_in=TOKEN_A,
+            token_out=TOKEN_B,
+            amount=10_000,
+            max_mev_risk=0.9,
+        )
+        bt = Backtester(BacktestConfig(initial_balance={TOKEN_A: 1_000_000}))
+        result = bt.run(states, strategy)
+        assert result.num_trades > 0
+
+
+class TestSharpeCalculation:
+    def test_sharpe_positive_for_winning_trades(self) -> None:
+        bt = Backtester()
+        # Use varying positive returns so std > 0, which allows Sharpe to be computed
+        bt._trade_records = [
+            TradeRecord(slot=i, action=ExecutionAction(kind=ActionKind.NO_OP), pnl_lamports=50 + i * 10)
+            for i in range(20)
+        ]
+        bt._equity_curve = [float(1000 + i * 100) for i in range(21)]
+        metrics = bt.calculate_metrics()
+        assert metrics.sharpe_ratio > 0
+
+    def test_sharpe_zero_for_zero_variance(self) -> None:
+        # all identical returns
+        returns = [100.0] * 10
+        sharpe = Backtester._calculate_sharpe(returns, 0.0)
+        # when std is zero, sharpe should be zero (avoid div by zero)
+        assert sharpe == 0.0
+
+    def test_sharpe_requires_minimum_trades(self) -> None:
+        assert Backtester._calculate_sharpe([], 0.05) == 0.0
+        assert Backtester._calculate_sharpe([1.0], 0.05) == 0.0
+
+
+class TestMaxDrawdown:
+    def test_no_drawdown_on_rising_curve(self) -> None:
+        curve = [100.0, 200.0, 300.0, 400.0, 500.0]
+        dd = Backtester._calculate_max_drawdown(curve)
+        assert dd == 0.0
+
+    def test_full_drawdown_to_zero(self) -> None:
+        curve = [100.0, 50.0, 0.0]
+        dd = Backtester._calculate_max_drawdown(curve)
+        assert dd == 1.0
+
+    def test_partial_drawdown(self) -> None:
+        curve = [100.0, 120.0, 80.0, 110.0]
+        dd = Backtester._calculate_max_drawdown(curve)
+        # peak 120, trough 80 => dd = 40/120 = 0.333
+        assert abs(dd - (40 / 120)) < 0.001
+
+    def test_empty_curve(self) -> None:
+        assert Backtester._calculate_max_drawdown([]) == 0.0
+        assert Backtester._calculate_max_drawdown([100.0]) == 0.0
+
+
+class TestWinRateAccuracy:
+    def test_all_wins(self) -> None:
+        bt = Backtester()
+        bt._trade_records = [
+            TradeRecord(slot=i, action=ExecutionAction(kind=ActionKind.NO_OP), pnl_lamports=10)
+            for i in range(10)
+        ]
+        bt._equity_curve = [float(100 + i * 10) for i in range(11)]
+        metrics = bt.calculate_metrics()
+        assert metrics.win_rate == 1.0
+
+    def test_all_losses(self) -> None:
+        bt = Backtester()
+        bt._trade_records = [
+            TradeRecord(slot=i, action=ExecutionAction(kind=ActionKind.NO_OP), pnl_lamports=-10)
+            for i in range(10)
+        ]
+        bt._equity_curve = [float(100 - i * 10) for i in range(11)]
+        metrics = bt.calculate_metrics()
+        assert metrics.win_rate == 0.0
+
+    def test_half_and_half(self) -> None:
+        bt = Backtester()
+        bt._trade_records = [
+            TradeRecord(
+                slot=i,
+                action=ExecutionAction(kind=ActionKind.NO_OP),
+                pnl_lamports=10 if i % 2 == 0 else -10,
+            )
+            for i in range(10)
+        ]
+        bt._equity_curve = [100.0] * 11
+        metrics = bt.calculate_metrics()
+        assert metrics.win_rate == 0.5
+
+
+class TestEmptyHistory:
+    def test_empty_history_returns_zero_trades(self) -> None:
+        strategy = SimpleSwapStrategy(TOKEN_A, TOKEN_B, 10_000)
+        bt = Backtester(BacktestConfig(initial_balance={TOKEN_A: 1_000_000}))
+        result = bt.run([], strategy)
+        assert result.num_trades == 0
+        assert result.total_pnl == 0
+        assert result.sharpe_ratio == 0.0
+        assert result.max_drawdown == 0.0
+
+
+class TestReportGeneration:
+    def test_report_contains_key_fields(self) -> None:
+        history = _make_history(10)
+        strategy = SimpleSwapStrategy(TOKEN_A, TOKEN_B, 10_000)
+        bt = Backtester(BacktestConfig(initial_balance={TOKEN_A: 1_000_000}))
+        result = bt.run(history, strategy)
+
+        report = bt.generate_report(result)
+        assert "BACKTEST REPORT" in report
+        assert "Total PnL" in report
+        assert "Win rate" in report
+        assert "Sharpe ratio" in report
+        assert "Max drawdown" in report
+        assert "MEV losses" in report
+
+    def test_report_handles_no_trades(self) -> None:
+        bt = Backtester()
+        result = BacktestResult()
+        report = bt.generate_report(result)
+        assert "BACKTEST REPORT" in report
+        assert "0" in report
