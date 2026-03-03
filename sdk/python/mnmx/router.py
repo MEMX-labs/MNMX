@@ -322,3 +322,112 @@ class MnmxRouter:
             mev = amount * adv.mev_extraction
             price = amount * adv.price_movement
             amount = amount - fee_worst - slippage_worst - mev - price
+            amount = max(amount, 0.0)
+
+        return amount
+
+    def _run_minimax(
+        self,
+        node: _SearchNode,
+        target_chain: Chain,
+        target_token: str,
+        alpha: float,
+        beta: float,
+        is_maximizing: bool,
+        request: RouteRequest,
+    ) -> float:
+        """Recursive minimax with alpha-beta pruning.
+
+        MAX player picks the best bridge.
+        MIN player applies worst-case adversarial conditions.
+        """
+        self._stats.nodes_explored += 1
+
+        # terminal: reached destination
+        if node.chain == target_chain and node.depth > 0:
+            return node.amount
+
+        # depth limit
+        if node.depth >= request.max_hops:
+            self._stats.nodes_pruned += 1
+            return 0.0 if node.chain != target_chain else node.amount
+
+        bridges = self._registry.get_for_pair(node.chain, target_chain)
+        if not bridges and node.depth < request.max_hops - 1:
+            # try intermediate hops
+            all_adapters = self._registry.get_all()
+            reachable: list[tuple[BridgeAdapter, Chain]] = []
+            for adapter in all_adapters:
+                for chain in adapter.supported_chains:
+                    if chain != node.chain and adapter.supports_pair(node.chain, chain):
+                        reachable.append((adapter, chain))
+            if not reachable:
+                return 0.0
+            bridges_with_targets = reachable
+        else:
+            bridges_with_targets = [(b, target_chain) for b in bridges]
+
+        if is_maximizing:
+            best = float("-inf")
+            for bridge, next_chain in bridges_with_targets:
+                try:
+                    quote = bridge.get_quote(
+                        node.chain, next_chain, node.token, target_token, node.amount
+                    )
+                except Exception:
+                    self._stats.nodes_pruned += 1
+                    continue
+
+                child = _SearchNode(
+                    chain=next_chain,
+                    token=target_token,
+                    amount=quote.output_amount,
+                    depth=node.depth + 1,
+                )
+                val = self._run_minimax(child, target_chain, target_token, alpha, beta, False, request)
+                best = max(best, val)
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    self._stats.nodes_pruned += 1
+                    break
+            return best if best != float("-inf") else 0.0
+        else:
+            # MIN player: apply adversarial conditions
+            adv = self._config.adversarial_model
+            worst_amount = node.amount * (1.0 - adv.mev_extraction - adv.price_movement)
+            worst_amount = max(worst_amount, 0.0)
+            child = _SearchNode(
+                chain=node.chain,
+                token=node.token,
+                amount=worst_amount,
+                depth=node.depth,
+            )
+            return self._run_minimax(child, target_chain, target_token, alpha, beta, True, request)
+
+    def _collect_quotes(
+        self,
+        from_chain: Chain,
+        to_chain: Chain,
+        from_token: str,
+        to_token: str,
+        amount: float,
+    ) -> list[BridgeQuote]:
+        """Collect quotes from all bridges supporting the given pair."""
+        bridges = self._registry.get_for_pair(from_chain, to_chain)
+        quotes: list[BridgeQuote] = []
+        for bridge in bridges:
+            try:
+                q = bridge.get_quote(from_chain, to_chain, from_token, to_token, amount)
+                quotes.append(q)
+            except Exception:
+                continue
+        return quotes
+
+    def _apply_strategy_weights(self, routes: list[Route], strategy: Strategy) -> list[Route]:
+        """Re-score and sort routes according to strategy weights."""
+        weights = get_strategy_weights(strategy)
+        for route in routes:
+            route.minimax_score = self._scorer.score_route(route, weights)
+            route.strategy = strategy
+        routes.sort(key=lambda r: r.minimax_score, reverse=True)
+        return routes
