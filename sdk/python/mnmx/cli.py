@@ -87,3 +87,107 @@ def route(
 
         for i, r in enumerate(routes[:20], 1):
             table.add_row(
+                str(i),
+                " > ".join(r.bridges_used),
+                str(r.hop_count),
+                f"{r.expected_output:.4f}",
+                f"{r.guaranteed_minimum:.4f}",
+                f"{r.total_fees:.4f}",
+                str(r.estimated_time),
+                f"{r.minimax_score:.4f}",
+            )
+
+        console.print(table)
+
+        stats = router.last_search_stats
+        console.print(
+            f"\n[dim]Explored {stats.nodes_explored} nodes, "
+            f"pruned {stats.nodes_pruned}, "
+            f"max depth {stats.max_depth_reached}, "
+            f"in {stats.search_time_ms:.1f}ms[/dim]"
+        )
+
+    except Exception as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("from_chain")
+@click.argument("from_token")
+@click.argument("amount", type=float)
+@click.argument("to_chain")
+@click.argument("to_token")
+@click.option("--max-hops", "-m", default=2, type=int)
+@click.option("--slippage", default=0.005, type=float)
+def compare(
+    from_chain: str,
+    from_token: str,
+    amount: float,
+    to_chain: str,
+    to_token: str,
+    max_hops: int,
+    slippage: float,
+) -> None:
+    """Compare all strategies for a given pair.
+
+    Example: mnmx compare ethereum USDC 1000 arbitrum USDC
+    """
+    try:
+        router = _make_router("minimax", max_hops, slippage)
+        analyzer = BatchAnalyzer(router)
+        analysis = analyzer.analyze_pair(from_chain, from_token, amount, to_chain, to_token)
+
+        table = Table(title=f"Strategy Comparison: {from_token}@{from_chain} -> {to_token}@{to_chain}")
+        table.add_column("Strategy")
+        table.add_column("Output", justify="right")
+        table.add_column("Min Output", justify="right")
+        table.add_column("Fees", justify="right")
+        table.add_column("Hops", justify="right")
+        table.add_column("Score", justify="right")
+        table.add_column("Best?", justify="center")
+
+        best = analysis.best_strategy
+        for strat, r in analysis.routes_by_strategy.items():
+            if r is not None:
+                marker = "[green]***[/green]" if strat == best else ""
+                table.add_row(
+                    strat,
+                    f"{r.expected_output:.4f}",
+                    f"{r.guaranteed_minimum:.4f}",
+                    f"{r.total_fees:.4f}",
+                    str(r.hop_count),
+                    f"{r.minimax_score:.4f}",
+                    marker,
+                )
+            else:
+                table.add_row(strat, "N/A", "N/A", "N/A", "N/A", "N/A", "")
+
+        console.print(table)
+        console.print(f"\n[bold]Best strategy: {best}[/bold]  Score spread: {analysis.score_spread:.4f}")
+
+    except Exception as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("from_chain")
+@click.argument("from_token")
+@click.argument("amount", type=float)
+@click.argument("to_chain")
+@click.argument("to_token")
+@click.option("--strategy", "-s", default="minimax", type=click.Choice(VALID_STRATEGIES))
+@click.option("--iterations", "-n", default=5000, type=int, help="Monte Carlo iterations")
+@click.option("--seed", default=None, type=int, help="Random seed for reproducibility")
+@click.option("--max-hops", "-m", default=2, type=int)
+def simulate(
+    from_chain: str,
+    from_token: str,
+    amount: float,
+    to_chain: str,
+    to_token: str,
+    strategy: str,
+    iterations: int,
+    seed: Optional[int],
+    max_hops: int,
