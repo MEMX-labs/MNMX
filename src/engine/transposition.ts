@@ -129,3 +129,85 @@ export class TranspositionTable {
       if (!shouldReplace) return;
       this.overwrites++;
     }
+
+    // Evict oldest entries if at capacity
+    if (!existing && this.entries.size >= this.maxEntries) {
+      this.evictStaleEntries();
+    }
+
+    this.entries.set(hash, {
+      hash,
+      depth,
+      score,
+      flag,
+      bestAction,
+      age: this.currentAge,
+    });
+  }
+
+  /** Advance the generation counter.  Call at the start of each new search. */
+  incrementAge(): void {
+    this.currentAge++;
+  }
+
+  /** Wipe the entire table and reset statistics. */
+  clear(): void {
+    this.entries.clear();
+    this.hits = 0;
+    this.misses = 0;
+    this.overwrites = 0;
+    this.currentAge = 0;
+  }
+
+  /** Return current performance statistics. */
+  getStats(): TableStats {
+    const total = this.hits + this.misses;
+    return {
+      entries: this.entries.size,
+      hits: this.hits,
+      misses: this.misses,
+      hitRate: total === 0 ? 0 : this.hits / total,
+      overwrites: this.overwrites,
+    };
+  }
+
+  /** Retrieve an entry without affecting hit/miss counters (for testing). */
+  peek(hash: string): TranspositionEntry | undefined {
+    return this.entries.get(hash);
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  // ── Private ─────────────────────────────────────────────────────
+
+  /**
+   * Evict entries from older generations until we are below 90% capacity.
+   * Falls back to evicting the shallowest entries if all are current-gen.
+   */
+  private evictStaleEntries(): void {
+    const target = Math.floor(this.maxEntries * 0.9);
+
+    // First pass: remove entries from previous generations
+    if (this.entries.size > target) {
+      for (const [key, entry] of this.entries) {
+        if (entry.age < this.currentAge) {
+          this.entries.delete(key);
+          if (this.entries.size <= target) return;
+        }
+      }
+    }
+
+    // Second pass: remove shallowest entries
+    if (this.entries.size > target) {
+      const sorted = [...this.entries.entries()].sort(
+        (a, b) => a[1].depth - b[1].depth,
+      );
+      for (const [key] of sorted) {
+        this.entries.delete(key);
+        if (this.entries.size <= target) return;
+      }
+    }
+  }
+}
