@@ -490,3 +490,186 @@ impl MinimaxEngine {
     pub fn transposition_table(&self) -> &TranspositionTable {
         &self.transposition_table
     }
+
+    /// Access the move orderer (for testing / diagnostics).
+    pub fn move_orderer(&self) -> &MoveOrderer {
+        &self.move_orderer
+    }
+
+    /// Access the stats (for testing / diagnostics).
+    pub fn last_stats(&self) -> &SearchStatistics {
+        &self.stats
+    }
+
+    /// Get the config.
+    pub fn config(&self) -> &SearchConfig {
+        &self.config
+    }
+}
+
+/// Convert an MevThreat to an ExecutionAction for search purposes.
+fn threat_to_action(threat: &MevThreat) -> ExecutionAction {
+    let kind = match threat.kind {
+        MevKind::Sandwich | MevKind::Frontrun | MevKind::Backrun => ActionKind::Swap,
+        MevKind::JitLiquidity => ActionKind::AddLiquidity,
+    };
+    ExecutionAction::new(
+        kind,
+        &threat.source_address,
+        threat.estimated_cost,
+        &threat.affected_pool,
+        100,
+        &threat.affected_pool,
+        10_000,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_state() -> OnChainState {
+        let mut balances = HashMap::new();
+        balances.insert("SOL".to_string(), 1_000_000);
+        balances.insert("USDC".to_string(), 5_000_000);
+        OnChainState {
+            token_balances: balances,
+            pool_states: vec![PoolState::new(
+                "pool1",
+                10_000_000,
+                50_000_000,
+                30,
+                "SOL",
+                "USDC",
+            )],
+            pending_transactions: Vec::new(),
+            slot: 100,
+            block_time: 1700000000,
+        }
+    }
+
+    fn test_actions() -> Vec<ExecutionAction> {
+        vec![
+            ExecutionAction::new(ActionKind::Swap, "SOL", 100_000, "USDC", 50, "pool1", 5000),
+            ExecutionAction::new(ActionKind::Swap, "SOL", 50_000, "USDC", 50, "pool1", 3000),
+        ]
+    }
+
+    #[test]
+    fn test_search_returns_plan() {
+        let config = SearchConfig {
+            max_depth: 2,
+            time_limit_ms: 5000,
+            ..SearchConfig::default()
+        };
+        let mut engine = MinimaxEngine::new(config);
+        let state = test_state();
+        let actions = test_actions();
+        let plan = engine.search(&state, &actions);
+        assert!(!plan.actions.is_empty());
+        assert!(plan.expected_score.is_finite());
+        assert!(plan.search_stats.nodes_explored > 0);
+    }
+
+    #[test]
+    fn test_empty_actions() {
+        let config = SearchConfig::default();
+        let mut engine = MinimaxEngine::new(config);
+        let state = test_state();
+        let plan = engine.search(&state, &[]);
+        assert!(plan.actions.is_empty());
+        assert_eq!(plan.expected_score, 0.0);
+    }
+
+    #[test]
+    fn test_single_action() {
+        let config = SearchConfig {
+            max_depth: 2,
+            time_limit_ms: 5000,
+            ..SearchConfig::default()
+        };
+        let mut engine = MinimaxEngine::new(config);
+        let state = test_state();
+        let actions = vec![ExecutionAction::new(
+            ActionKind::Swap,
+            "SOL",
+            100_000,
+            "USDC",
+            50,
+            "pool1",
+            5000,
+        )];
+        let plan = engine.search(&state, &actions);
+        assert!(!plan.actions.is_empty());
+    }
+
+    #[test]
+    fn test_deeper_explores_more() {
+        let state = test_state();
+        let actions = test_actions();
+
+        let mut engine_shallow = MinimaxEngine::new(SearchConfig {
+            max_depth: 1,
+            time_limit_ms: 5000,
+            alpha_beta_enabled: false,
+            transposition_enabled: false,
+            move_ordering_enabled: false,
+            ..SearchConfig::default()
+        });
+        let plan_shallow = engine_shallow.search(&state, &actions);
+
+        let mut engine_deep = MinimaxEngine::new(SearchConfig {
+            max_depth: 3,
+            time_limit_ms: 5000,
+            alpha_beta_enabled: false,
+            transposition_enabled: false,
+            move_ordering_enabled: false,
+            ..SearchConfig::default()
+        });
+        let plan_deep = engine_deep.search(&state, &actions);
+
+        assert!(
+            plan_deep.search_stats.nodes_explored
+                >= plan_shallow.search_stats.nodes_explored,
+            "deep={} shallow={}",
+            plan_deep.search_stats.nodes_explored,
+            plan_shallow.search_stats.nodes_explored
+        );
+    }
+
+    #[test]
+    fn test_alpha_beta_prunes() {
+        let state = test_state();
+        let actions = test_actions();
+
+        let mut engine_ab = MinimaxEngine::new(SearchConfig {
+            max_depth: 3,
+            time_limit_ms: 5000,
+            alpha_beta_enabled: true,
+            transposition_enabled: false,
+            move_ordering_enabled: false,
+            ..SearchConfig::default()
+        });
+        let plan_ab = engine_ab.search(&state, &actions);
+
+        let mut engine_no_ab = MinimaxEngine::new(SearchConfig {
+            max_depth: 3,
+            time_limit_ms: 5000,
+            alpha_beta_enabled: false,
+            transposition_enabled: false,
+            move_ordering_enabled: false,
+            ..SearchConfig::default()
+        });
+        let plan_no_ab = engine_no_ab.search(&state, &actions);
+
+        // Alpha-beta should explore fewer or equal nodes
+        assert!(
+            plan_ab.search_stats.nodes_explored
+                <= plan_no_ab.search_stats.nodes_explored,
+            "ab={} no_ab={}",
+            plan_ab.search_stats.nodes_explored,
+            plan_no_ab.search_stats.nodes_explored
+        );
+    }
+}
