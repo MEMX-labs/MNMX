@@ -478,3 +478,108 @@ mod tests {
         let detector = MevDetector::new();
         let pool = test_pool();
         let action = test_swap(500_000); // 5% of reserve
+
+        let pending = vec![PendingTx::new(
+            "sig1",
+            "MEVbot1",
+            "pool1",
+            200_000,
+            100,
+            20_000,
+        )];
+
+        let threat =
+            detector.analyze_sandwich_risk(&action, &pending, &[pool]);
+        assert!(threat.is_some());
+        let t = threat.unwrap();
+        assert_eq!(t.kind, MevKind::Sandwich);
+        assert!(t.probability > 0.0);
+        assert!(t.estimated_cost > 0);
+    }
+
+    #[test]
+    fn test_no_sandwich_tiny_trade() {
+        let detector = MevDetector::new();
+        let pool = test_pool();
+        let action = test_swap(100); // Tiny trade
+
+        let threat =
+            detector.analyze_sandwich_risk(&action, &[], &[pool]);
+        assert!(threat.is_none());
+    }
+
+    #[test]
+    fn test_frontrun_detection() {
+        let detector = MevDetector::new();
+        let action = test_swap(100_000);
+        let pending = vec![PendingTx::new(
+            "sig1",
+            "ARBbot",
+            "pool1",
+            50_000,
+            100,
+            50_000, // Higher fee than our 5000
+        )];
+
+        let threat = detector.analyze_frontrun_risk(&action, &pending);
+        assert!(threat.is_some());
+        assert_eq!(threat.unwrap().kind, MevKind::Frontrun);
+    }
+
+    #[test]
+    fn test_jit_detection() {
+        let detector = MevDetector::new();
+        let pool = test_pool();
+        // Large enough swap to make JIT profitable
+        let action = test_swap(5_000_000);
+
+        let threat = detector.analyze_jit_risk(&action, &pool);
+        assert!(threat.is_some());
+        assert_eq!(threat.unwrap().kind, MevKind::JitLiquidity);
+    }
+
+    #[test]
+    fn test_probability_calculation() {
+        // All zero signals => probability near 0.01 (clamped minimum)
+        let p = MevDetector::calculate_probability(&[0.01, 0.01]);
+        assert!(p < 0.1);
+
+        // All high signals => probability near 1.0
+        let p = MevDetector::calculate_probability(&[0.9, 0.9, 0.9]);
+        assert!(p > 0.8);
+
+        // Mixed signals => moderate probability
+        let p = MevDetector::calculate_probability(&[0.8, 0.2]);
+        assert!(p > 0.3 && p < 0.7);
+    }
+
+    #[test]
+    fn test_estimate_sandwich_cost() {
+        let pool = test_pool();
+        let cost = MevDetector::estimate_sandwich_cost(500_000, &pool);
+        assert!(cost > 0);
+        // Larger trade => higher cost
+        let cost2 = MevDetector::estimate_sandwich_cost(1_000_000, &pool);
+        assert!(cost2 > cost);
+    }
+
+    #[test]
+    fn test_detect_threats_full() {
+        let detector = MevDetector::new();
+        let mut state = OnChainState::new(100, 1700000000);
+        state.pool_states.push(test_pool());
+        state.pending_transactions.push(PendingTx::new(
+            "sig1",
+            "MEVbot1",
+            "pool1",
+            200_000,
+            100,
+            50_000,
+        ));
+
+        let action = test_swap(500_000);
+        let threats = detector.detect_threats(&action, &state);
+        // Should detect at least sandwich and possibly others
+        assert!(!threats.is_empty());
+    }
+}
