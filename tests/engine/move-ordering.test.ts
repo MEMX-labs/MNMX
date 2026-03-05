@@ -137,3 +137,155 @@ describe('MoveOrderer', () => {
       for (let d = 1; d <= 5; d++) {
         orderer.updateHistory(frequent, d);
       }
+
+      const ordered = orderer.orderMoves([rare, frequent], state, 0);
+      expect(ordered[0]!.label).toBe('frequent');
+    });
+
+    it('should weight history by depth squared', () => {
+      const shallow = makeAction({ pool: 'pool_shallow', label: 'shallow', priority: 0 });
+      const deep = makeAction({ pool: 'pool_deep', label: 'deep', priority: 0 });
+      const state = makeState();
+
+      // shallow: 5 cutoffs at depth 1 => score = 5 * 1 = 5
+      for (let i = 0; i < 5; i++) {
+        orderer.updateHistory(shallow, 1);
+      }
+
+      // deep: 1 cutoff at depth 4 => score = 1 * 16 = 16
+      orderer.updateHistory(deep, 4);
+
+      const ordered = orderer.orderMoves([shallow, deep], state, 0);
+      expect(ordered[0]!.label).toBe('deep');
+    });
+  });
+
+  describe('MVV-LVA prioritization', () => {
+    it('should prefer high-amount actions through liquid pools', () => {
+      const deepPool = makePool('pool_deep', 10_000_000_000n, 10_000_000_000n);
+      const state = makeState([deepPool]);
+
+      const bigSwap = makeAction({
+        pool: 'pool_deep',
+        amount: 100_000_000n,
+        label: 'big',
+        priority: 0,
+      });
+      const smallSwap = makeAction({
+        pool: 'pool_deep',
+        amount: 1_000n,
+        label: 'small',
+        priority: 0,
+      });
+
+      const ordered = orderer.orderMoves([smallSwap, bigSwap], state, 0);
+      expect(ordered[0]!.label).toBe('big');
+    });
+
+    it('should penalize high-slippage actions', () => {
+      const state = makeState();
+
+      const lowSlippage = makeAction({
+        pool: 'pool_a',
+        slippageBps: 10,
+        amount: 1_000_000n,
+        label: 'low_slip',
+        priority: 0,
+      });
+      const highSlippage = makeAction({
+        pool: 'pool_a',
+        slippageBps: 500,
+        amount: 1_000_000n,
+        label: 'high_slip',
+        priority: 0,
+      });
+
+      const ordered = orderer.orderMoves([highSlippage, lowSlippage], state, 0);
+      expect(ordered[0]!.label).toBe('low_slip');
+    });
+
+    it('should weight liquidation actions higher than transfers', () => {
+      const state = makeState();
+
+      const transfer = makeAction({
+        kind: 'transfer',
+        pool: 'pool_t',
+        amount: 1_000_000n,
+        label: 'transfer',
+        priority: 0,
+      });
+      const liquidation = makeAction({
+        kind: 'liquidate',
+        pool: 'pool_l',
+        amount: 1_000_000n,
+        label: 'liquidation',
+        priority: 0,
+      });
+
+      const ordered = orderer.orderMoves([transfer, liquidation], state, 0);
+      expect(ordered[0]!.label).toBe('liquidation');
+    });
+  });
+
+  describe('ordering efficiency', () => {
+    it('should not mutate the input array', () => {
+      const actions = [
+        makeAction({ pool: 'pool_1', label: 'a1' }),
+        makeAction({ pool: 'pool_2', label: 'a2' }),
+      ];
+      const original = [...actions];
+      const state = makeState();
+
+      orderer.orderMoves(actions, state, 0);
+
+      expect(actions[0]!.label).toBe(original[0]!.label);
+      expect(actions[1]!.label).toBe(original[1]!.label);
+    });
+
+    it('should respect explicit priority hints', () => {
+      const state = makeState();
+
+      const lowPri = makeAction({ pool: 'pool_lp', label: 'low', priority: 1 });
+      const highPri = makeAction({ pool: 'pool_hp', label: 'high', priority: 100 });
+
+      const ordered = orderer.orderMoves([lowPri, highPri], state, 0);
+      expect(ordered[0]!.label).toBe('high');
+    });
+
+    it('should handle empty action lists', () => {
+      const state = makeState();
+      const ordered = orderer.orderMoves([], state, 0);
+      expect(ordered).toHaveLength(0);
+    });
+
+    it('should handle single action lists', () => {
+      const state = makeState();
+      const action = makeAction({ label: 'only' });
+      const ordered = orderer.orderMoves([action], state, 0);
+      expect(ordered).toHaveLength(1);
+      expect(ordered[0]!.label).toBe('only');
+    });
+
+    it('should reset all heuristic data', () => {
+      const killerAction = makeAction({ pool: 'pool_k', label: 'killer' });
+      const historyAction = makeAction({ pool: 'pool_h', label: 'history', priority: 0 });
+      const state = makeState();
+
+      orderer.updateKillerMove(1, killerAction);
+      orderer.updateHistory(historyAction, 5);
+
+      orderer.reset();
+
+      // After reset, neither should have bonuses
+      const plainA = makeAction({ pool: 'pool_a', label: 'plain_a', priority: 10 });
+      const ordered = orderer.orderMoves(
+        [killerAction, historyAction, plainA],
+        state,
+        1,
+      );
+
+      // plainA has highest explicit priority, should win without heuristic bonuses
+      expect(ordered[0]!.label).toBe('plain_a');
+    });
+  });
+});

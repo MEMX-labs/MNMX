@@ -49,3 +49,63 @@ export class MoveOrderer {
       action,
       orderScore: this.computeOrderScore(action, state, depth),
     }));
+
+    // Sort descending – highest score first
+    scored.sort((a, b) => b.orderScore - a.orderScore);
+
+    return scored.map((s) => s.action);
+  }
+
+  /**
+   * Record a killer move at the given depth.  Called when an action
+   * causes a beta cutoff during search.
+   */
+  updateKillerMove(depth: number, action: ExecutionAction): void {
+    const key = actionKey(action);
+    let slots = this.killerMoves.get(depth);
+    if (!slots) {
+      slots = [];
+      this.killerMoves.set(depth, slots);
+    }
+
+    // Avoid duplicates
+    if (slots.includes(key)) return;
+
+    // Shift older killer out if at capacity
+    if (slots.length >= MAX_KILLER_SLOTS) {
+      slots.shift();
+    }
+    slots.push(key);
+  }
+
+  /**
+   * Bump the history score for an action.  Weighted by depth squared
+   * so that refutations found deeper in the tree carry more weight.
+   */
+  updateHistory(action: ExecutionAction, depth: number): void {
+    const key = actionKey(action);
+    const prev = this.historyScores.get(key) ?? 0;
+    this.historyScores.set(key, prev + depth * depth);
+  }
+
+  /** Reset all heuristic data (call between unrelated searches). */
+  reset(): void {
+    this.killerMoves.clear();
+    this.historyScores.clear();
+  }
+
+  // ── Private ─────────────────────────────────────────────────────
+
+  private computeOrderScore(
+    action: ExecutionAction,
+    state: OnChainState,
+    depth: number,
+  ): number {
+    let score = 0;
+
+    // 1. Killer-move bonus (highest priority)
+    const key = actionKey(action);
+    const killers = this.killerMoves.get(depth);
+    if (killers?.includes(key)) {
+      score += 50_000;
+    }
