@@ -162,3 +162,41 @@ The core search engine. Implements negamax with alpha-beta pruning and iterative
 | `constructor` | `(config?: Partial<SearchConfig>)` | Create engine with optional config overrides |
 | `search` | `(state: OnChainState, actions: ExecutionAction[]) => ExecutionPlan` | Run minimax search and return the optimal plan |
 | `reset` | `() => void` | Clear transposition table and move ordering data |
+
+### GameTreeBuilder
+
+Constructs and simulates the adversarial game tree.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `buildTree` | `(state, actions, threats) => GameNode` | Construct full game tree |
+| `simulateAction` | `(state, action) => OnChainState` | Simulate an action on state |
+| `generateAdversaryMoves` | `(state, action) => MevThreat[]` | Generate probable MEV responses |
+
+### PositionEvaluator
+
+Scores (state, action) pairs using the weighted evaluation function.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `evaluate` | `(state: OnChainState, action: ExecutionAction) => EvaluationResult` | Score a position |
+
+### MevDetector
+
+Identifies MEV threats from pending transactions and pool state.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `detectThreats` | `(action, recentTxs) => MevThreat[]` | Identify all MEV threats |
+| `analyzeSandwichRisk` | `(action, txs) => MevThreat \| null` | Sandwich attack analysis |
+| `analyzeJitRisk` | `(action, pool) => MevThreat \| null` | JIT liquidity analysis |
+
+### PlanExecutor
+
+Converts execution plans into Solana transactions.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `execute` | `(plan: ExecutionPlan) => Promise<ExecutionResult>` | Submit plan as transactions |
+| `buildTransaction` | `(action) => Transaction` | Build a single transaction |
+| `simulateTransaction` | `(tx) => Promise<SimulationResult>` | Simulate without submitting |
