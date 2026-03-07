@@ -111,3 +111,54 @@ console.log(`Nodes explored: ${plan.stats.nodesExplored}`);
 console.log(`Nodes pruned: ${plan.stats.nodesPruned}`);
 console.log(`Depth reached: ${plan.stats.maxDepthReached}`);
 ```
+
+## How the Minimax Engine Works
+
+The engine models on-chain execution as a two-player game:
+
+```
+Game Tree (depth 4):
+
+                        [Current State]                    depth 0
+                       /       |        \                  AGENT
+                    Swap-A   Swap-B   Swap-C
+                   /    \      |       /   \
+              [s1a]    [s1b] [s2]   [s3a] [s3b]           depth 1
+              Sand.  Nothing Front.  JIT  Nothing          ADVERSARY
+              /  \      |     |      |      |
+           [s2a][s2b] [s2c] [s2d]  [s2e] [s2f]            depth 2
+           Sw-A Sw-B  Sw-A  Sw-B   Sw-A  Sw-C             AGENT
+            |    |      |     |      |      |
+           ...  ...    ...   ...    ...    ...              depth 3
+                                                           ADVERSARY
+```
+
+1. **Agent nodes (MAX)**: Choose the action that maximizes score.
+2. **Adversary nodes (MIN)**: MEV bots choose the response that minimizes our score.
+3. **Alpha-beta pruning**: Skip branches that cannot improve the outcome.
+4. **Iterative deepening**: Search depth 1, 2, 3, ... until time runs out.
+5. **Transposition table**: Cache evaluated positions to avoid re-computation.
+6. **Move ordering**: Try promising actions first for better pruning.
+
+### Evaluation Function
+
+Each leaf position is scored across four dimensions:
+
+| Dimension        | Weight | Description                                      |
+|------------------|--------|--------------------------------------------------|
+| Gas Cost         | 0.10   | Estimated compute units and priority fee          |
+| Slippage Impact  | 0.30   | Market impact relative to pool depth              |
+| MEV Exposure     | 0.35   | Probability-weighted cost of adversarial attacks  |
+| Profit Potential | 0.25   | Net expected value after all costs                |
+
+## API Reference
+
+### MinimaxEngine
+
+The core search engine. Implements negamax with alpha-beta pruning and iterative deepening.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `constructor` | `(config?: Partial<SearchConfig>)` | Create engine with optional config overrides |
+| `search` | `(state: OnChainState, actions: ExecutionAction[]) => ExecutionPlan` | Run minimax search and return the optimal plan |
+| `reset` | `() => void` | Clear transposition table and move ordering data |
