@@ -214,3 +214,91 @@ impl TimeManager {
     pub fn extension_factor(&self) -> f64 {
         self.extension_factor
     }
+
+    /// How many extensions have been granted.
+    pub fn extensions_used(&self) -> u32 {
+        self.extensions_granted
+    }
+
+    /// Remaining time budget given elapsed time.
+    pub fn remaining_ms(&self, elapsed_ms: u64) -> u64 {
+        let effective = (self.base_time_ms as f64 * self.extension_factor) as u64;
+        effective.saturating_sub(elapsed_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_config() -> SearchConfig {
+        SearchConfig {
+            max_depth: 6,
+            time_limit_ms: 2000,
+            ..SearchConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_should_stop_at_limit() {
+        let tm = TimeManager::new(&default_config());
+        assert!(!tm.should_stop(5, 0));     // 5ms is within depth-0 budget
+        assert!(tm.should_stop(2000, 0));   // 2000ms exceeds total budget
+        assert!(tm.should_stop(3000, 5));   // 3000ms exceeds total budget
+    }
+
+    #[test]
+    fn test_emergency_stop() {
+        let tm = TimeManager::new(&default_config());
+        assert!(!tm.emergency_stop(2000));
+        assert!(tm.emergency_stop(4001)); // 2x base = 4000
+    }
+
+    #[test]
+    fn test_extension() {
+        let mut tm = TimeManager::new(&default_config());
+        assert!(!tm.should_stop(1500, 5));
+        // Without extension, 2000 is the limit
+        assert!(tm.should_stop(2100, 5));
+
+        tm.extend(ExtendReason::Instability);
+        // Now budget is 2000 * 1.5 = 3000
+        assert!(!tm.should_stop(2100, 5));
+        assert!(tm.should_stop(3100, 5));
+    }
+
+    #[test]
+    fn test_max_extensions() {
+        let mut tm = TimeManager::new(&default_config());
+        for _ in 0..10 {
+            tm.extend(ExtendReason::ScoreDrop);
+        }
+        // Should be capped at max_time / base_time = 2.0
+        assert!(tm.extension_factor() <= 2.0);
+    }
+
+    #[test]
+    fn test_allocate_phases() {
+        let tm = TimeManager::new(&default_config());
+
+        let opening = tm.allocate(GamePhase::Opening);
+        let midgame = tm.allocate(GamePhase::Midgame);
+        let endgame = tm.allocate(GamePhase::Endgame);
+
+        // All should have the same total
+        assert_eq!(opening.total_ms, midgame.total_ms);
+        assert_eq!(midgame.total_ms, endgame.total_ms);
+
+        // Opening should be flatter (first depth gets more than in midgame)
+        // Endgame should be front-loaded
+        assert!(endgame.per_depth[0] >= midgame.per_depth[0]);
+    }
+
+    #[test]
+    fn test_remaining_ms() {
+        let tm = TimeManager::new(&default_config());
+        assert_eq!(tm.remaining_ms(0), 2000);
+        assert_eq!(tm.remaining_ms(1000), 1000);
+        assert_eq!(tm.remaining_ms(3000), 0);
+    }
+}

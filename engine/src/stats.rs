@@ -147,3 +147,106 @@ impl SearchStatistics {
         }
     }
 }
+
+impl Default for SearchStatistics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_stats_are_zero() {
+        let stats = SearchStatistics::new();
+        assert_eq!(stats.total_nodes(), 0);
+        assert_eq!(stats.total_pruned(), 0);
+        assert_eq!(stats.pruning_rate(), 0.0);
+        assert_eq!(stats.effective_branching_factor(), 0.0);
+    }
+
+    #[test]
+    fn test_node_tracking() {
+        let mut stats = SearchStatistics::new();
+        stats.record_node_visit();
+        stats.record_node_visit();
+        stats.record_prune();
+        assert_eq!(stats.total_nodes(), 2);
+        assert_eq!(stats.total_pruned(), 1);
+    }
+
+    #[test]
+    fn test_pruning_rate() {
+        let mut stats = SearchStatistics::new();
+        for _ in 0..7 {
+            stats.record_node_visit();
+        }
+        for _ in 0..3 {
+            stats.record_prune();
+        }
+        // pruning_rate = 3 / (7+3) = 0.3
+        assert!((stats.pruning_rate() - 0.3).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_nps() {
+        let mut stats = SearchStatistics::new();
+        for _ in 0..10_000 {
+            stats.record_node_visit();
+        }
+        let nps = stats.nodes_per_second(100);
+        assert!((nps - 100_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_branching_factor() {
+        let mut stats = SearchStatistics::new();
+        stats.record_children(5);
+        stats.record_children(3);
+        stats.record_children(4);
+        // Average: (5+3+4)/3 = 4.0
+        assert!((stats.effective_branching_factor() - 4.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_depth_tracking() {
+        let mut stats = SearchStatistics::new();
+        stats.record_depth_completed(1, 10);
+        stats.record_depth_completed(2, 50);
+        stats.record_depth_completed(3, 200);
+        let ss = stats.to_search_stats();
+        assert_eq!(ss.max_depth_reached, 3);
+        assert_eq!(ss.time_ms, 200);
+    }
+
+    #[test]
+    fn test_tt_hit_rate() {
+        let mut stats = SearchStatistics::new();
+        stats.record_tt_hit();
+        stats.record_tt_hit();
+        stats.record_tt_miss();
+        assert!((stats.tt_hit_rate() - 2.0 / 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_to_search_stats() {
+        let mut stats = SearchStatistics::new();
+        stats.record_node_visit();
+        stats.record_prune();
+        stats.record_tt_hit();
+        stats.record_tt_miss();
+        stats.record_depth_completed(2, 100);
+        stats.record_children(4);
+
+        let ss = stats.to_search_stats();
+        assert_eq!(ss.nodes_explored, 1);
+        assert_eq!(ss.nodes_pruned, 1);
+        assert_eq!(ss.tt_hits, 1);
+        assert_eq!(ss.tt_misses, 1);
+        assert_eq!(ss.max_depth_reached, 2);
+        assert_eq!(ss.time_ms, 100);
+        assert!((ss.branching_factor - 4.0).abs() < 0.001);
+    }
+}
