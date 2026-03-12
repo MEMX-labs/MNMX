@@ -182,3 +182,65 @@ const router = new MnmxRouter({ strategy: 'cheapest' });
 // Fastest -- minimize transfer time
 const router = new MnmxRouter({ strategy: 'fastest' });
 
+// Safest -- maximize bridge reliability
+const router = new MnmxRouter({ strategy: 'safest' });
+```
+
+| Strategy | Fees | Slippage | Speed | Reliability | MEV | Use Case |
+|----------|------|----------|-------|-------------|-----|----------|
+| **minimax** | 0.25 | 0.25 | 0.15 | 0.20 | 0.15 | Best guaranteed outcome (default) |
+| **cheapest** | 0.45 | 0.30 | 0.05 | 0.10 | 0.10 | Minimize total cost |
+| **fastest** | 0.10 | 0.15 | 0.50 | 0.15 | 0.10 | Minimize transfer time |
+| **safest** | 0.10 | 0.15 | 0.10 | 0.40 | 0.25 | Maximize security |
+
+### Compare Routes
+
+```typescript
+const routes = await router.findAllRoutes({
+  from: { chain: 'ethereum', token: 'ETH', amount: '1.0' },
+  to:   { chain: 'solana',   token: 'SOL' },
+});
+
+for (const route of routes) {
+  console.log(`${route.path.join(' -> ')}`);
+  console.log(`  Expected: ${route.expectedOutput} SOL`);
+  console.log(`  Minimum:  ${route.guaranteedMinimum} SOL`);
+  console.log(`  Fees:     ${route.totalFees}`);
+  console.log(`  Time:     ${route.estimatedTime}`);
+}
+```
+
+### Python SDK
+
+```python
+from mnmx import MnmxRouter, RouteSimulator
+
+router = MnmxRouter(strategy="minimax")
+
+route = router.find_route(
+    from_chain="ethereum",
+    from_token="ETH",
+    amount="1.0",
+    to_chain="solana",
+    to_token="SOL",
+)
+
+# Monte Carlo simulation
+sim = RouteSimulator()
+mc = sim.monte_carlo(route=route, iterations=10_000, seed=42)
+
+print(f"Mean output: {mc.mean_output:.4f} SOL")
+print(f"5th percentile: {mc.percentile_5:.4f} SOL")
+print(f"Worst observed: {mc.min_output:.4f} SOL")
+```
+
+### Custom Bridge
+
+```typescript
+import { BridgeAdapter } from '@mnmx/core';
+
+class MyBridgeAdapter implements BridgeAdapter {
+  name = 'my-bridge';
+  supportedChains = ['ethereum', 'solana', 'arbitrum'];
+
+  async getQuote(params) {
