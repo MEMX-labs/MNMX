@@ -59,3 +59,65 @@ graph TD
     F --> J
 
     subgraph Engine Core
+        D
+        G
+        H
+        I
+        E
+    end
+
+    subgraph Bridge Layer
+        J
+        K[Wormhole]
+        L[deBridge]
+        M[LayerZero]
+        N[Allbridge]
+    end
+
+    J --> K
+    J --> L
+    J --> M
+    J --> N
+```
+
+### Multi-Language Architecture
+
+| Language | Directory | Role |
+|----------|-----------|------|
+| **Rust** | `engine/` | Core search engine. Minimax with alpha-beta pruning, route scoring, path discovery, transposition table. Sub-millisecond search across thousands of candidate paths. |
+| **TypeScript** | `src/` | SDK and bridge integration layer. MnmxRouter, bridge adapters (Wormhole, deBridge, LayerZero, Allbridge), chain configurations, route execution. |
+| **Python** | `sdk/python/` | Research and simulation toolkit. Route simulator, Monte Carlo analysis, batch strategy comparison, CLI. |
+
+### Data Flow
+
+1. **PathDiscovery** enumerates all viable paths between source and destination — direct bridges, 2-hop paths through intermediate chains, 3-hop paths through multiple intermediaries. A transfer from Ethereum to Solana might discover 15+ candidate paths across different bridge combinations.
+
+2. **StateCollector** gathers real-time market data for each path segment — gas prices, bridge liquidity, congestion levels, recent success rates, token prices.
+
+3. **MinimaxEngine** models each path as a game tree. Your move: choose a route. The adversary's move: worst-case market conditions (slippage spike, gas surge, bridge delay, MEV extraction). The engine searches this tree with alpha-beta pruning to find the route with the **best guaranteed minimum outcome**.
+
+4. **RouteScorer** evaluates every leaf across five weighted dimensions:
+
+| Dimension | Weight | What it captures |
+|-----------|--------|------------------|
+| Fees | 0.25 | Bridge fees + gas costs across all hops |
+| Slippage | 0.25 | Price impact relative to liquidity depth |
+| Speed | 0.15 | Total estimated transfer time |
+| Reliability | 0.20 | Historical bridge success rate |
+| MEV Exposure | 0.15 | Probability-weighted adversarial extraction |
+
+5. **RouteExecutor** executes the optimal route, monitoring each hop and handling failures with automatic fallback.
+
+### Adversarial Model
+
+The adversarial model controls worst-case estimation. Every quoted value gets multiplied by a worst-case factor:
+
+| Parameter | Default | What it models |
+|-----------|---------|----------------|
+| `slippageMultiplier` | 2.0x | Quoted slippage doubles |
+| `gasMultiplier` | 1.5x | Gas price surges 50% |
+| `bridgeDelayMultiplier` | 3.0x | Bridge takes 3x longer |
+| `mevExtraction` | 0.3% | MEV bots extract 0.3% of value |
+| `priceMovement` | 0.5% | Token price moves 0.5% against you |
+
+Higher multipliers = more conservative routing. The engine will prefer routes with lower variance over routes with higher expected value. This is appropriate when protecting large transfers.
