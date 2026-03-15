@@ -62,11 +62,20 @@ export const ARBITRUM_CONFIG: ChainConfig = {
 };
 
 /**
- * Estimate the current Arbitrum gas price.
+ * Fetch the current Arbitrum gas price via RPC.
  * Arbitrum has L1 + L2 gas components.
  */
 export async function getArbitrumGasPrice(): Promise<bigint> {
-  // Arbitrum gas is much cheaper than L1
-  const l2GasGwei = 0.1 + Math.random() * 0.5;
-  return BigInt(Math.floor(l2GasGwei * 1e9));
+  try {
+    const res = await fetch(ARBITRUM_CONFIG.rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const data = await res.json() as { result?: string };
+    if (data.result) return BigInt(data.result);
+  } catch { /* fall through */ }
+  // Fallback: ~0.3 gwei typical for Arbitrum L2
+  return BigInt(Math.floor(0.3 * 1e9));
 }

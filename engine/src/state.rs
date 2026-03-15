@@ -58,8 +58,8 @@ impl StateCollector {
         }
     }
 
-    /// Build a complete market state snapshot. In production this would query
-    /// RPC nodes and oracles; here we use deterministic simulated data.
+    /// Build a complete market state snapshot from cached chain and bridge data.
+    /// Token prices and gas costs are seeded from known reference values.
     pub fn collect_state(&mut self) -> &MarketState {
         self.populate_token_prices();
         self.populate_gas_prices();

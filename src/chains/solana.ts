@@ -64,10 +64,27 @@ export const SOLANA_CONFIG: ChainConfig = {
 /**
  * Estimate the current Solana transaction fee.
  * Solana has a fixed base fee of 5000 lamports per signature.
- * Priority fees vary.
+ * Priority fees are fetched from the RPC when available.
  */
 export async function getSolanaFee(): Promise<number> {
-  const baseFee = 5000; // lamports
-  const priorityFee = Math.floor(Math.random() * 50000); // variable priority
+  const baseFee = 5000; // lamports per signature
+  let priorityFee = 10000; // conservative default
+  try {
+    const res = await fetch(SOLANA_CONFIG.rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'getRecentPrioritizationFees',
+        params: [],
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const data = await res.json() as { result?: Array<{ prioritizationFee: number }> };
+    if (data.result && data.result.length > 0) {
+      const fees = data.result.map(f => f.prioritizationFee);
+      priorityFee = fees[Math.floor(fees.length / 2)]; // median
+    }
+  } catch { /* use default */ }
   return (baseFee + priorityFee) / 1e9; // return in SOL
 }

@@ -10,6 +10,7 @@ import type {
   QuoteParams,
   Signer,
 } from '../types/index.js';
+import { createHash } from 'crypto';
 
 /**
  * Interface that all bridge adapters must implement.
@@ -44,6 +45,10 @@ export abstract class AbstractBridgeAdapter implements BridgeAdapter {
   abstract readonly name: string;
   abstract readonly supportedChains: Chain[];
 
+  /** Cached health data with TTL */
+  private healthCache: { data: BridgeHealth; expiresAt: number } | null = null;
+  private static readonly HEALTH_CACHE_TTL = 30_000;
+
   supportsRoute(fromChain: Chain, toChain: Chain): boolean {
     return (
       fromChain !== toChain &&
@@ -55,25 +60,31 @@ export abstract class AbstractBridgeAdapter implements BridgeAdapter {
   abstract getQuote(params: QuoteParams): Promise<BridgeQuote>;
   abstract execute(quote: BridgeQuote, signer: Signer): Promise<string>;
 
-  async getStatus(_txHash: string): Promise<BridgeStatus> {
-    // Simulate status progression
-    const roll = Math.random();
-    if (roll < 0.7) return 'completed';
-    if (roll < 0.9) return 'confirming';
-    if (roll < 0.97) return 'pending';
-    return 'failed';
+  /**
+   * Query the bridge API for transaction status.
+   * Subclasses should override with protocol-specific API calls.
+   */
+  abstract getStatus(txHash: string): Promise<BridgeStatus>;
+
+  /**
+   * Fetch bridge health metrics. Uses a short-lived cache to avoid
+   * overwhelming bridge APIs with repeated health checks during
+   * route scoring.
+   */
+  async getHealth(): Promise<BridgeHealth> {
+    if (this.healthCache && Date.now() < this.healthCache.expiresAt) {
+      return this.healthCache.data;
+    }
+    const health = await this.fetchHealth();
+    this.healthCache = {
+      data: health,
+      expiresAt: Date.now() + AbstractBridgeAdapter.HEALTH_CACHE_TTL,
+    };
+    return health;
   }
 
-  async getHealth(): Promise<BridgeHealth> {
-    return {
-      online: true,
-      congestion: Math.random() * 0.3,
-      recentSuccessRate: 0.95 + Math.random() * 0.05,
-      medianConfirmTime: 60 + Math.floor(Math.random() * 240),
-      lastChecked: Date.now(),
-      pendingTxCount: Math.floor(Math.random() * 50),
-    };
-  }
+  /** Fetch fresh health data from bridge API. Override in subclasses. */
+  protected abstract fetchHealth(): Promise<BridgeHealth>;
 
   /**
    * Compute a base fee as a fraction of input amount.
@@ -98,15 +109,13 @@ export abstract class AbstractBridgeAdapter implements BridgeAdapter {
   }
 
   /**
-   * Generate a simulated transaction hash.
+   * Derive a deterministic transaction hash from quote data and timestamp.
+   * Used as a placeholder until the actual on-chain tx hash is available.
    */
-  protected generateTxHash(): string {
-    const chars = '0123456789abcdef';
-    let hash = '0x';
-    for (let i = 0; i < 64; i++) {
-      hash += chars[Math.floor(Math.random() * 16)];
-    }
-    return hash;
+  protected deriveTxHash(quote: BridgeQuote): string {
+    const input = `${quote.bridge}:${quote.inputAmount}:${quote.outputAmount}:${Date.now()}`;
+    const hash = createHash('sha256').update(input).digest('hex');
+    return '0x' + hash;
   }
 
   /**
@@ -120,8 +129,7 @@ export abstract class AbstractBridgeAdapter implements BridgeAdapter {
     const majorChains: Chain[] = ['ethereum', 'arbitrum', 'polygon'];
     const fromMultiplier = majorChains.includes(fromChain) ? 1.5 : 1.0;
     const toMultiplier = majorChains.includes(toChain) ? 1.5 : 1.0;
-    const jitter = 0.8 + Math.random() * 0.4;
-    return baseLiquidity * fromMultiplier * toMultiplier * jitter;
+    return baseLiquidity * fromMultiplier * toMultiplier;
   }
 }
 

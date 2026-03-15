@@ -62,13 +62,22 @@ export const ETHEREUM_CONFIG: ChainConfig = {
 };
 
 /**
- * Estimate the current Ethereum gas price.
- * Returns a simulated gas price in wei.
+ * Fetch the current Ethereum gas price in wei via the configured RPC.
+ * Falls back to a conservative estimate if the RPC is unavailable.
  */
 export async function getEthereumGasPrice(): Promise<bigint> {
-  // Simulate a gas price between 15-45 gwei
-  const baseGwei = 15 + Math.floor(Math.random() * 30);
-  return BigInt(baseGwei) * BigInt(1e9);
+  try {
+    const res = await fetch(ETHEREUM_CONFIG.rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] }),
+      signal: AbortSignal.timeout(3000),
+    });
+    const data = await res.json() as { result?: string };
+    if (data.result) return BigInt(data.result);
+  } catch { /* fall through to estimate */ }
+  // Conservative fallback: 30 gwei
+  return BigInt(30) * BigInt(1e9);
 }
 
 /**
