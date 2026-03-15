@@ -244,3 +244,65 @@ class MyBridgeAdapter implements BridgeAdapter {
   supportedChains = ['ethereum', 'solana', 'arbitrum'];
 
   async getQuote(params) {
+    const response = await fetch(`https://api.mybridge.com/quote?...`);
+    const data = await response.json();
+    return {
+      bridge: this.name,
+      inputAmount: params.amount,
+      outputAmount: data.outputAmount,
+      fee: data.fee,
+      estimatedTime: data.estimatedTime,
+      liquidityDepth: data.availableLiquidity,
+      expiresAt: Date.now() + 30_000,
+    };
+  }
+  // ... implement execute, getStatus, getHealth
+}
+
+router.registerBridge(new MyBridgeAdapter());
+```
+
+## Supported Chains
+
+| Chain | Bridges Available |
+|-------|-------------------|
+| Ethereum | Wormhole, deBridge, LayerZero, Allbridge |
+| Solana | Wormhole, deBridge, Allbridge |
+| Arbitrum | Wormhole, deBridge, LayerZero |
+| Base | Wormhole, LayerZero |
+| Polygon | Wormhole, LayerZero, Allbridge |
+| BNB Chain | deBridge, LayerZero, Allbridge |
+| Optimism | Wormhole, LayerZero |
+| Avalanche | Wormhole, LayerZero, Allbridge |
+
+## API Reference
+
+Full API documentation: **[mnmx.app/docs](https://mnmx.app/docs)**
+
+### Core Classes
+
+| Class | Purpose |
+|-------|---------|
+| `MnmxRouter` | Main entry point -- route discovery, optimization, and execution |
+| `MinimaxEngine` | Core search engine -- minimax with alpha-beta pruning |
+| `PathDiscovery` | Enumerate all candidate paths across bridges |
+| `RouteScorer` | Multi-dimensional route evaluation |
+| `BridgeAdapter` | Interface for bridge integrations |
+| `RouteSimulator` | Simulate routes under adversarial conditions (Python) |
+
+## References
+
+- Von Neumann, J. (1928). "Zur Theorie der Gesellschaftsspiele." *Mathematische Annalen*, 100(1), 295-320.
+- Shannon, C. E. (1950). "Programming a Computer for Playing Chess." *Philosophical Magazine*, 41(314).
+- Knuth, D. E. & Moore, R. W. (1975). "An Analysis of Alpha-Beta Pruning." *Artificial Intelligence*, 6(4), 293-326.
+
+## Links
+
+- Website: [mnmx.app](https://mnmx.app)
+- Documentation: [mnmx.app/docs](https://mnmx.app/docs)
+- GitHub: [github.com/MEMX-labs/MNMX](https://github.com/MEMX-labs/MNMX)
+- Twitter: [x.com/mnmxapp](https://x.com/mnmxapp)
+
+## License
+
+[MIT](./LICENSE) -- Copyright (c) 2026 MNMX Protocol
