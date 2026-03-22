@@ -53,6 +53,8 @@
 - [ ] Adapter circuit breaker and failover
 - [ ] Structured logging with trace IDs
 - [ ] Latency monitoring and alerting
+- [ ] Dynamic adversarial calibration (per-chain, per-bridge multiplier tuning from execution data)
+- [ ] Probabilistic path exploration (discover multi-hop routes beyond static connectivity graph)
 
 ## Planned
 
